@@ -11,7 +11,7 @@
 # 2. Make an app-specific password at appleid.apple.com (Sign-In & Security ▸ App-Specific
 #    Passwords), then store notary credentials once:
 #       xcrun notarytool store-credentials ShotMark-Notary \
-#         --apple-id "dutcher.leland@gmail.com" --team-id KG6926BEBK
+#         --apple-id "dutcher.leland@gmail.com" --team-id PKUE74YS72
 #
 # ── Then, to release ──
 #   scripts/release.sh v0.1.0
