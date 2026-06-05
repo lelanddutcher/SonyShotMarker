@@ -18,8 +18,6 @@ Your Sony camera can drop frame-accurate markers *while you roll* — you hit th
 
 **Shot Mark Embedder fixes that.** Drop your already-offloaded clips on it, and it reads the Shot Marks straight out of the camera's own metadata and bakes them into a copy of each file as standard Adobe XMP markers — the kind Premiere reads natively on import. No plugin to install, no Creative Cloud extension to babysit, no subscription, and no giant watermark stamped across your footage. The repo also ships a **DaVinci Resolve** script that drops the same marks in as Resolve clip markers.
 
-It's a tiny, single-purpose tool that does one annoying thing perfectly so you never think about it again.
-
 ## Table of contents
 
 - [Why this exists (and why I didn't just pay Sony)](#why-this-exists-and-why-i-didnt-just-pay-sony)
@@ -36,7 +34,7 @@ It's a tiny, single-purpose tool that does one annoying thing perfectly so you n
 - [Disclaimer](#disclaimer)
 - [License](#license)
 
-## Why this exists (and why I didn't just pay Sony)
+## Why this exists
 
 Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premiere Pro. I tried it. Here's the honest rundown:
 
@@ -44,10 +42,6 @@ Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premier
 - **It's gated to specific Premiere versions.** Sony's plugin is a native MediaCore (C++) plugin that's only documented/compatible with a **narrow band of Premiere versions (roughly 15.4–22.4)**. Update Premiere and it breaks. It is effectively frozen in time.
 - **It's not durable.** Because it's version-locked and machine-specific, it doesn't travel well — different editor, different Premiere build, different software stack, and you're troubleshooting a dead plugin instead of cutting.
 - **It barely helps Resolve.** Sony's own docs note the Catalyst *Prepare Plugin for DaVinci Resolve* **can't import Shot Marks at all** — that lives only in the standalone Catalyst apps.
-
-So you have a feature you already paid for when you bought the camera, locked behind a yearly subscription, behind a plugin that breaks every time Adobe ships an update. No thanks.
-
-**Shot Mark Embedder takes the opposite approach.** Instead of a fragile plugin that has to keep up with Premiere forever, it just translates Sony's marks into the marker format Premiere and Resolve *already* understand, and writes it into the file (or applies it via Resolve's own scripting API). There's nothing to break on the next update — it's just metadata. It's free, it's open source, and it does both NLEs.
 
 ## What you get
 
