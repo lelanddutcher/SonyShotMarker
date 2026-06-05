@@ -48,6 +48,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# ad-hoc codesign so Gatekeeper lets it launch locally
+# strip extended attributes (codesign rejects resource forks / Finder info), then ad-hoc sign
+xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "▸ built: $APP"

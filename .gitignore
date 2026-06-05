@@ -40,3 +40,6 @@ branding/*.psd
 __pycache__/
 *.pyc
 .DS_Store
+
+# ── Release artifacts (the .app ships via GitHub Releases, not git) ──
+*.zip

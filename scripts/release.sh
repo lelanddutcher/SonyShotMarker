@@ -27,6 +27,9 @@ ZIP="Shot-Mark-Embedder-${TAG}.zip"
 echo "▸ building the app"
 ( cd app && bash build_app.sh )
 
+echo "▸ stripping extended attributes (codesign rejects resource forks / Finder info)"
+xattr -cr "$APP"
+
 echo "▸ codesigning (Developer ID, hardened runtime, secure timestamp)"
 codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
