@@ -1,0 +1,42 @@
+# ── Footage / media — NEVER publish camera clips or derived media ──
+*.MP4
+*.mp4
+*.MOV
+*.mov
+*.MXF
+*.mxf
+*.M4V
+*.m4v
+*.ARW
+*.CR2
+*.CR3
+*.DNG
+*.wav
+*.aif
+*.aiff
+*.pek
+footage embedded markers/
+SIMON7034M01.XML
+*.MP4.xmp
+*.mov.xmp
+*.mxf.xmp
+
+# ── Build artifacts / binaries (the app ships via Releases, not git) ──
+.build/
+app/.build/
+app/dist/
+DerivedData/
+
+# ── Generated / test output (derived from real footage) ──
+samples/
+project testing/
+GitHub/
+github/
+
+# ── Sources we don't ship ──
+branding/*.psd
+
+# ── Python / macOS cruft ──
+__pycache__/
+*.pyc
+.DS_Store

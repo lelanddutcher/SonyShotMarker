@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""
+embed_batch.py — the engine behind the "drop files → embedded copies" Mac app.
+
+Assumes the DIT already offloaded. Takes a list of Sony clips and an output directory
+and writes XMP-marker-embedded COPIES into:
+
+    <output>/footage embedded markers/
+
+Originals are never touched. Clips with no user Shot Marks are skipped (reported).
+
+  --progress  emit machine-readable "@@P done total state name" lines for a GUI
+  --json      emit one JSON result object at the end
+
+Usage:
+  embed_batch.py --out /path/to/output  CLIP1.MP4 CLIP2.MP4 ...
+"""
+import os, sys, json, argparse
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import sony_shotmark as S
+
+OUT_FOLDER_NAME = "footage embedded markers"
+
+
+def process_one(src, dest_dir):
+    """Embed one clip into dest_dir. Returns (rec, human_message)."""
+    name = os.path.basename(src)
+    rec = {"file": name, "status": "", "state": "skip", "marks": 0, "output": ""}
+    if not os.path.isfile(src):
+        rec.update(status="missing"); return rec, f"✗ {name}: not found"
+    try:
+        clip = S.parse_clip(src)
+    except SystemExit:
+        rec.update(status="not-sony"); return rec, f"– {name}: no Sony metadata, skipped"
+    except Exception as e:
+        rec.update(status="error", state="err"); return rec, f"✗ {name}: {e}"
+
+    user = [m for m in clip.marks if m.is_user_mark]
+    if not user:
+        rec.update(status="no-marks"); return rec, f"– {name}: no Shot Marks, skipped"
+    if not src.lower().endswith((".mp4", ".mov", ".m4v")):
+        rec.update(status="unsupported"); return rec, f"– {name}: {len(user)} mark(s), not MP4/MOV"
+
+    out = os.path.join(dest_dir, name)
+    try:
+        S.embed_xmp_into_mp4(clip, src, out)   # copies src->out, embeds; never touches src
+        rec.update(status="embedded", state="ok", marks=len(user), output=out)
+        return rec, f"✓ {name}: {len(user)} Shot Mark(s) embedded"
+    except SystemExit as e:
+        rec.update(status=f"embed-failed", state="err"); return rec, f"✗ {name}: {e}"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Embed Sony Shot Marks into copies in an output folder")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--progress", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("files", nargs="+")
+    args = ap.parse_args(argv)
+
+    dest_dir = os.path.join(args.out, OUT_FOLDER_NAME)
+    os.makedirs(dest_dir, exist_ok=True)
+    N = len(args.files)
+    results = []
+    for i, src in enumerate(args.files):
+        if args.progress:
+            print(f"@@P {i} {N} work {os.path.basename(src)}", flush=True)
+        rec, msg = process_one(src, dest_dir)
+        results.append(rec)
+        if not args.json:
+            print("  " + msg, flush=True)
+        if args.progress:
+            print(f"@@P {i+1} {N} {rec['state']} {rec['file']}", flush=True)
+
+    n_ok = sum(1 for r in results if r["status"] == "embedded")
+    if args.progress:
+        print(f"@@P {N} {N} done {n_ok}", flush=True)
+    if args.json:
+        print(json.dumps({"dest": dest_dir, "embedded": n_ok, "total": N, "results": results}))
+    elif not args.progress:
+        print(f"\n✓ {n_ok}/{N} embedded → {dest_dir}\n")
+    else:
+        print(f"@@DONE {n_ok}/{N} embedded → {dest_dir}", flush=True)
+    return 0 if n_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
