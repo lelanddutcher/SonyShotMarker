@@ -352,37 +352,102 @@ def write_xmp_sidecar(clip: ClipMarks, out: str, include_auto: bool = False):
     open(out, "w").write(build_xmp(clip, include_auto))
 
 
+ADOBE_XMP_UUID = bytes.fromhex("BE7ACFCB97A942E89C71999491E3AFAC")
+
+
+def _read_box_size(raw: bytes, offset: int) -> int:
+    size = int.from_bytes(raw[offset:offset + 4], "big")
+    if size == 1:
+        if offset + 16 > len(raw):
+            return 0
+        return int.from_bytes(raw[offset + 8:offset + 16], "big")
+    if size == 0:
+        return len(raw) - offset
+    return size
+
+
+def _top_level_boxes(raw: bytes):
+    pos = 0
+    n = len(raw)
+    while pos + 8 <= n:
+        size = _read_box_size(raw, pos)
+        kind = raw[pos + 4:pos + 8]
+        if size < 8 or pos + size > n:
+            break
+        yield kind, pos, size
+        pos += size
+
+
+def _xmp_uuid_box(packet: bytes) -> bytes:
+    payload = ADOBE_XMP_UUID + packet
+    size = len(payload) + 8
+    if size > 0xFFFFFFFF:
+        return (1).to_bytes(4, "big") + b"uuid" + size.to_bytes(8, "big") + payload
+    return size.to_bytes(4, "big") + b"uuid" + payload
+
+
 def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool = False):
     """
-    Embed the xmpDM markers INTO a copy of the MP4 as a top-level Adobe XMP `uuid`
-    box (the ISO-BMFF XMP convention) so the marks travel with the file. The source
-    is never modified; we copy src->out and write into the copy with exiftool, which
-    places the XMP in the spec-correct location and fixes chunk offsets.
-    Requires exiftool on PATH.
+    Embed xmpDM markers INTO a copy of an MP4/MOV/M4V without external tools.
+
+    The Mac app's validated strategy is intentionally mirrored here for Windows:
+    copy the source, find reusable top-level `free`/`skip` space before `mdat`, write
+    a standard Adobe XMP `uuid` box into that space, then leave the media payload and
+    chunk offsets untouched. Originals are never modified and there is no exiftool
+    dependency for Windows users.
     """
-    import shutil, subprocess, tempfile
-    if shutil.which("exiftool") is None:
-        raise SystemExit("embed requires 'exiftool' on PATH")
+    import shutil
+
     if os.path.abspath(src) == os.path.abspath(out):
         raise SystemExit("refusing to embed into the original; choose a different output path")
-    shutil.copy2(src, out)
-    core = build_xmp(clip, include_auto)
-    core = core.split("?>", 1)[1].strip()  # drop <?xml?> decl
+    raw = open(src, "rb").read()
+    boxes = list(_top_level_boxes(raw))
+    mdat_offsets = [offset for kind, offset, _size in boxes if kind == b"mdat"]
+    if not mdat_offsets:
+        raise SystemExit("no mdat box found; not a writable MP4/MOV")
+    mdat_offset = min(mdat_offsets)
+
+    core = build_xmp(clip, include_auto).split("?>", 1)[1].strip()
     packet = ('<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
-              + core + '\n<?xpacket end="w"?>')
-    with tempfile.NamedTemporaryFile("w", suffix=".xmp", delete=False) as tf:
-        tf.write(packet); tmp = tf.name
+              + core + '\n<?xpacket end="w"?>').encode("utf-8")
+    uuid_box = _xmp_uuid_box(packet)
+    needed = len(uuid_box) + 8  # leave a valid trailing free box header
+
+    reusable = None
+    neutralize_offsets = []
+    for kind, offset, size in boxes:
+        if offset >= mdat_offset:
+            continue
+        if kind in (b"free", b"skip") and size >= needed and reusable is None:
+            reusable = (offset, size)
+        if kind == b"uuid" and size >= 24 and raw[offset + 8:offset + 24] == ADOBE_XMP_UUID:
+            neutralize_offsets.append(offset)
+
+    if reusable is None:
+        raise SystemExit(f"no reusable free space before mdat (need {needed} bytes)")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    shutil.copy2(src, out)
+    free_offset, free_size = reusable
+    trailing_free_size = free_size - len(uuid_box)
     try:
-        r = subprocess.run(["exiftool", "-overwrite_original", "-m", f"-XMP<={tmp}", out],
-                           capture_output=True, text=True)
-        if "1 image files updated" not in (r.stdout + r.stderr):
-            raise SystemExit(f"exiftool embed failed:\n{r.stdout}\n{r.stderr}")
-        # verify round-trip
-        rb = subprocess.run(["exiftool", "-xmp", "-b", out], capture_output=True, text=True)
-        n = rb.stdout.count("xmpDM:startTime")
-        print(f"  -> EMBED {out}  ({n} clip markers embedded; Sony marks preserved)")
-    finally:
-        os.unlink(tmp)
+        with open(out, "r+b") as fh:
+            # Neutralize previous Adobe XMP boxes so Premiere sees this run's markers first.
+            for offset in neutralize_offsets:
+                fh.seek(offset + 4)
+                fh.write(b"free")
+            fh.seek(free_offset)
+            fh.write(uuid_box)
+            fh.write(trailing_free_size.to_bytes(4, "big") + b"free")
+    except Exception:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        raise
+
+    n = packet.count(b"xmpDM:startTime")
+    print(f"  -> EMBED {out}  ({n} clip markers embedded; Sony marks preserved)")
 
 
 def write_fcpxml(clip: ClipMarks, out: str):
@@ -435,7 +500,7 @@ def main(argv=None):
                          "<clip>.xmp next to the input (appended form).")
     ap.add_argument("--embed", nargs="?", const="AUTO",
                     help="embed markers INTO a copy of the MP4 (never the original). "
-                         "With no value, writes <clip>_embedded.<ext>. Requires exiftool.")
+                         "With no value, writes <clip>_embedded.<ext>.")
     ap.add_argument("--include-auto", action="store_true",
                     help="include automatic _RecStart/_RecEnd marks in outputs")
     ap.add_argument("--quiet", action="store_true")

@@ -6,6 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)
+![Windows](https://img.shields.io/badge/Windows-port%20in%20progress-blue?logo=windows)
 ![Made for](https://img.shields.io/badge/footage-Sony%20XAVC-orange)
 
 <img src="docs/img/app-ui.png" width="540" alt="Shot Mark Embedder — drop your Sony clips, get markers" />
@@ -48,6 +49,7 @@ Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premier
 | | |
 |---|---|
 | 🎬 **`Shot Mark Embedder.app`** | A tiny macOS app. Drag clips in → get a `footage embedded markers` folder of copies with the marks baked in. Read natively by Premiere Pro, Bridge, and Media Encoder on import. |
+| 🪟 **Windows build** | A Windows port with the same framing and workflow lives in [`windows/`](windows/). It uses the same pure-Python marker engine and is built/tested by GitHub Actions. |
 | 🟦 **`Resolve_ApplyShotMarks.py`** | A drop-in DaVinci Resolve script. One click in `Workspace ▸ Scripts` and every clip in your project gets its Shot Marks as Resolve clip markers — **including clips already cut into a timeline.** |
 | 🧰 **The Python toolkit** | `sony_shotmark.py` (extract + translate to timecode → XMP / CSV / FCPXML / JSON) and batch tooling, if you'd rather script your own pipeline. |
 
@@ -130,6 +132,8 @@ The full reverse-engineering write-up (byte layout, the LTC decode, the KLV keys
 
 ## Build from source
 
+### macOS app
+
 ```bash
 git clone https://github.com/lelanddutcher/SonyShotMarker.git
 cd SonyShotMarker/app
@@ -137,7 +141,24 @@ swift run                 # run it straight away, or…
 bash build_app.sh         # → app/dist/Shot Mark Embedder.app
 ```
 
-Requires macOS 13+ and a Swift toolchain (Xcode or the Swift CLI). The app is **pure Swift** — no Python, no ExifTool, no runtime dependencies. The Python tools in `tools/` are optional and only need Python 3.8+.
+### Windows app
+
+The Windows port lives in [`windows/`](windows/) and is built by `.github/workflows/windows-build.yml` on `windows-latest`. It matches the same basic flow: add/drop clips, choose output, click **Embed Markers**, and get copies in `footage embedded markers/`. The embedder is pure Python and does **not** require ExifTool.
+
+```powershell
+py -3.12 -m venv .venv-win
+.\.venv-win\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-windows.txt
+python -m pytest -q tests
+powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
+```
+
+Output: `dist\Shot Mark Embedder\Shot Mark Embedder.exe`.
+
+Real Sony sample clips should still be used for final release validation on an actual Windows machine; the repo's synthetic fixtures prove parser/embedder mechanics and source-file safety.
+
+Requires macOS 13+ and a Swift toolchain (Xcode or the Swift CLI). The Mac app is **pure Swift** — no Python, no ExifTool, no runtime dependencies. The Python tools in `tools/` are optional and only need Python 3.8+.
 
 ## ⚠️ Read this before you delete originals
 
