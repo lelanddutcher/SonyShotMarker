@@ -1,0 +1,54 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows.txt
+
+      - name: Run core tests
+        run: python -m pytest -q tests
+
+      - name: Compile and smoke Windows launcher
+        run: |
+          python -m py_compile windows/shot_mark_embedder_windows.py tools/sony_shotmark.py tools/embed_batch.py
+          python windows/shot_mark_embedder_windows.py --smoke
+
+      - name: Build Windows app
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
+
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $exe = "dist\Shot Mark Embedder\Shot Mark Embedder.exe"
+          if (!(Test-Path $exe)) { throw "missing $exe" }
+          Get-Item $exe | Format-List FullName,Length
+          $smokeFile = "dist\windows-smoke.txt"
+          if (Test-Path $smokeFile) { Remove-Item $smokeFile }
+          & $exe --smoke --smoke-file $smokeFile
+          Start-Sleep -Seconds 2
+          if (!(Test-Path $smokeFile)) { throw "packaged smoke failed: missing smoke file" }
+          Get-Content $smokeFile
+          if ((Get-Content $smokeFile -Raw) -notmatch "smoke ok") { throw "packaged smoke failed" }
+
+      - name: Upload Windows app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shot-Mark-Embedder-Windows
+          path: dist/Shot Mark Embedder/
