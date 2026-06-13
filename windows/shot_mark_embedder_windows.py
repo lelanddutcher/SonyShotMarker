@@ -279,10 +279,12 @@ class ShotMarkApp:
 
 def smoke() -> int:
     """CI/package smoke that avoids opening a window."""
-    required = [ROOT / "tools" / "sony_shotmark.py", ROOT / "tools" / "embed_batch.py"]
-    missing = [str(p) for p in required if not p.exists()]
+    missing = []
+    for attr in ("OUT_FOLDER_NAME", "process_one"):
+        if not hasattr(embed_batch, attr):
+            missing.append(f"embed_batch.{attr}")
     if missing:
-        print("missing bundled files: " + ", ".join(missing), file=sys.stderr)
+        print("missing bundled symbols: " + ", ".join(missing), file=sys.stderr)
         return 1
     print(f"{APP_TITLE} smoke ok; tkinter={'yes' if tk is not None else 'no'}; dnd={'yes' if TkinterDnD is not None else 'no'}; root={ROOT}")
     return 0

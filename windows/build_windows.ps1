@@ -6,8 +6,10 @@ python -m PyInstaller `
   --clean `
   --windowed `
   --name "Shot Mark Embedder" `
-  --add-data "tools;tools" `
+  --paths "tools" `
   --add-data "branding;branding" `
+  --hidden-import embed_batch `
+  --hidden-import sony_shotmark `
   --collect-all tkinterdnd2 `
   windows\shot_mark_embedder_windows.py
 
