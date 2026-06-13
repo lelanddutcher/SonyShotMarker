@@ -39,9 +39,13 @@ jobs:
           $exe = "dist\Shot Mark Embedder\Shot Mark Embedder.exe"
           if (!(Test-Path $exe)) { throw "missing $exe" }
           Get-Item $exe | Format-List FullName,Length
-          $smoke = & $exe --smoke 2>&1
-          $smoke | Write-Host
-          if (($smoke -join "`n") -notmatch "smoke ok") { throw "packaged smoke failed" }
+          $smokeFile = "dist\windows-smoke.txt"
+          if (Test-Path $smokeFile) { Remove-Item $smokeFile }
+          & $exe --smoke --smoke-file $smokeFile
+          Start-Sleep -Seconds 2
+          if (!(Test-Path $smokeFile)) { throw "packaged smoke failed: missing smoke file" }
+          Get-Content $smokeFile
+          if ((Get-Content $smokeFile -Raw) -notmatch "smoke ok") { throw "packaged smoke failed" }
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4

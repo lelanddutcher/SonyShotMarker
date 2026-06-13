@@ -286,7 +286,15 @@ def smoke() -> int:
     if missing:
         print("missing bundled symbols: " + ", ".join(missing), file=sys.stderr)
         return 1
-    print(f"{APP_TITLE} smoke ok; tkinter={'yes' if tk is not None else 'no'}; dnd={'yes' if TkinterDnD is not None else 'no'}; root={ROOT}")
+    message = f"{APP_TITLE} smoke ok; tkinter={'yes' if tk is not None else 'no'}; dnd={'yes' if TkinterDnD is not None else 'no'}; root={ROOT}"
+    if "--smoke-file" in sys.argv:
+        try:
+            target = Path(sys.argv[sys.argv.index("--smoke-file") + 1])
+        except (IndexError, ValueError):
+            print("--smoke-file requires a path", file=sys.stderr)
+            return 1
+        target.write_text(message + "\n", encoding="utf-8")
+    print(message)
     return 0
 
 
