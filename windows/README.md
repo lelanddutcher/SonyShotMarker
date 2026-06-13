@@ -24,7 +24,7 @@ powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
 Output:
 
 ```text
-dist\Shot Mark Embedder\Shot Mark Embedder.exe
+dist\Shot Mark Embedder.exe
 ```
 
 The app is intentionally dependency-light at runtime: the marker embedder is pure Python and does **not** require ExifTool. `tkinterdnd2` is bundled by PyInstaller for drag/drop support; if running from source without it, the **Add Clips…** button still works.

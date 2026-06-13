@@ -36,12 +36,14 @@ jobs:
       - name: Verify executable exists
         shell: pwsh
         run: |
-          $exe = "dist\Shot Mark Embedder\Shot Mark Embedder.exe"
+          $exe = "dist\Shot Mark Embedder.exe"
           if (!(Test-Path $exe)) { throw "missing $exe" }
           Get-Item $exe | Format-List FullName,Length
+          & $exe --smoke
+          if ($LASTEXITCODE -ne 0) { throw "packaged smoke failed with exit code $LASTEXITCODE" }
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
         with:
           name: Shot-Mark-Embedder-Windows
-          path: dist/Shot Mark Embedder/
+          path: dist/Shot Mark Embedder.exe

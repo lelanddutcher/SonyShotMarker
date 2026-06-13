@@ -154,9 +154,9 @@ python -m pytest -q tests
 powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
 ```
 
-Output: `dist\Shot Mark Embedder\Shot Mark Embedder.exe`.
+Output: `dist\Shot Mark Embedder.exe`.
 
-Real Sony sample clips should still be used for final release validation on an actual Windows machine; the repo's synthetic fixtures prove parser/embedder mechanics and source-file safety.
+The CI build smoke-runs the packaged EXE with `--smoke`. Real Sony sample clips should still be used for final release validation on an actual Windows machine; the repo's synthetic fixtures prove parser/embedder mechanics and source-file safety.
 
 Requires macOS 13+ and a Swift toolchain (Xcode or the Swift CLI). The Mac app is **pure Swift** — no Python, no ExifTool, no runtime dependencies. The Python tools in `tools/` are optional and only need Python 3.8+.
 
