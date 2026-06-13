@@ -39,8 +39,9 @@ jobs:
           $exe = "dist\Shot Mark Embedder\Shot Mark Embedder.exe"
           if (!(Test-Path $exe)) { throw "missing $exe" }
           Get-Item $exe | Format-List FullName,Length
-          & $exe --smoke
-          if ($LASTEXITCODE -ne 0) { throw "packaged smoke failed with exit code $LASTEXITCODE" }
+          $smoke = & $exe --smoke 2>&1
+          $smoke | Write-Host
+          if (($smoke -join "`n") -notmatch "smoke ok") { throw "packaged smoke failed" }
 
       - name: Upload Windows app artifact
         uses: actions/upload-artifact@v4
