@@ -72,6 +72,7 @@ class ShotMarkApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.cat_image: tk.PhotoImage | None = None
         self.last_log: str | None = None
+        self.cancel_event: threading.Event | None = None
 
         root.title(APP_TITLE)
         root.geometry("640x580")
@@ -165,6 +166,8 @@ class ShotMarkApp:
 
         self.run_button = ttk.Button(bottom, text="Embed Markers", style="Pink.TButton", command=self.run)
         self.run_button.pack(side=RIGHT, ipadx=14, ipady=7)
+        self.cancel_button = ttk.Button(bottom, text="Cancel", style="Plain.TButton", command=self.cancel)
+        # packed only while a run is in progress (see run() / poll_events)
         ttk.Button(bottom, text="Report a Problem…", style="Plain.TButton", command=self.report_problem).pack(
             side=RIGHT, padx=(0, 12)
         )
@@ -225,34 +228,56 @@ class ShotMarkApp:
     def run(self) -> None:
         if not self.can_run() or self.output_dir is None:
             return
+        dest_dir = self.output_dir / OUT_FOLDER_NAME
+
+        # Preflight gate — sources readable, output writable + not the original, enough space.
         try:
-            space_ok, required, free = S.enough_output_space(
-                [str(p) for p in self.files], str(self.output_dir)
-            )
+            problems = S.preflight([str(p) for p in self.files], str(dest_dir))
         except Exception:
-            space_ok, required, free = True, -1, -1
-        if not space_ok and not messagebox.askyesno(
+            problems = []
+        if problems and not messagebox.askyesno(
             APP_TITLE,
-            "The output drive may not have enough free space.\n\n"
-            f"Needs about {run_log._human(required)}, but only "
-            f"{run_log._human(free)} is free.\n\nEmbed anyway?",
+            "Some checks failed before starting:\n\n"
+            + "\n".join(f"  •  {p}" for p in problems)
+            + "\n\nFix these and try again, or embed anyway?",
         ):
             return
+
+        # Overwrite warning — copies from a previous run that would be replaced.
+        try:
+            clobber = S.existing_outputs([str(p) for p in self.files], str(dest_dir))
+        except Exception:
+            clobber = []
+        if clobber:
+            shown = ", ".join(clobber[:6]) + (f" +{len(clobber) - 6}" if len(clobber) > 6 else "")
+            if not messagebox.askyesno(
+                APP_TITLE,
+                f"“{OUT_FOLDER_NAME}” already contains {len(clobber)} cop"
+                f"{'y' if len(clobber) == 1 else 'ies'}:\n{shown}\n\nOverwrite them?",
+            ):
+                return
+
+        self.cancel_event = threading.Event()
         self.running = True
         self.progress.configure(value=0.0)
         self.status.configure(text="Starting…")
         self.log.delete("1.0", END)
         self.run_button.configure(text="Embedding…", state=DISABLED)
+        self.cancel_button.configure(state=NORMAL)
+        self.cancel_button.pack(side=RIGHT, padx=(0, 8), before=self.run_button)
         files = list(self.files)
         out = self.output_dir
-        worker = threading.Thread(target=self.worker, args=(files, out), daemon=True)
+        worker = threading.Thread(target=self.worker, args=(files, out, self.cancel_event), daemon=True)
         worker.start()
 
-    def worker(self, files: list[Path], out: Path) -> None:
+    def worker(self, files: list[Path], out: Path, cancel: threading.Event) -> None:
         dest_dir = out / OUT_FOLDER_NAME
         dest_dir.mkdir(parents=True, exist_ok=True)
         total = len(files)
         embedded = 0
+        results = []
+        cancelled = False
+        done = 0
 
         rl = run_log.RunLog()
         try:
@@ -263,25 +288,35 @@ class ShotMarkApp:
         rl.inputs([str(f) for f in files])
 
         for index, src in enumerate(files, start=1):
+            if cancel.is_set():               # cancel takes effect between files
+                cancelled = True
+                break
             self.events.put(("status", f"Embedding {src.name}…  ({index}/{total})"))
             try:
                 rec, msg = embed_batch.process_one(str(src), str(dest_dir))
             except Exception as exc:  # never let one bad clip kill the batch silently
-                rec, msg = {"status": "error"}, f"✗ {src.name} — {exc}"
+                rec, msg = {"status": "error", "state": "err"}, f"✗ {src.name} — {exc}"
+            results.append(rec)
+            done += 1
             if rec.get("status") == "embedded":
                 embedded += 1
             rl.result(msg)
             self.events.put(("log", msg))
             self.events.put(("progress", index / total))
 
-        rl.summary(f"{embedded}/{total} embedded")
+        tally = embed_batch.summarize(results)
+        leftover = total - done
+        if cancelled:
+            rl.summary(f"CANCELLED — {embedded}/{total} embedded, {leftover} not started   [{tally}]")
+        else:
+            rl.summary(f"{embedded}/{total} embedded   [{tally}]")
         try:
             log_path = rl.write()
         except Exception:
             log_path = None
         if log_path:
             self.events.put(("log", f"log saved: {log_path}"))
-        self.events.put(("done", (embedded, total, dest_dir, log_path)))
+        self.events.put(("done", (embedded, total, dest_dir, log_path, tally, cancelled, leftover)))
 
     def poll_events(self) -> None:
         try:
@@ -294,15 +329,20 @@ class ShotMarkApp:
                 elif kind == "progress":
                     self.progress.configure(value=float(payload))  # type: ignore[arg-type]
                 elif kind == "done":
-                    embedded, total, dest, log_path = payload  # type: ignore[misc]
+                    embedded, total, dest, log_path, tally, cancelled, leftover = payload  # type: ignore[misc]
                     self.last_log = log_path
                     self.running = False
-                    self.status.configure(text=f"Done — {embedded}/{total} embedded into “{OUT_FOLDER_NAME}”.")
+                    self.cancel_button.pack_forget()
                     self.run_button.configure(text="Embed Markers")
                     self.update_state()
-                    if embedded:
-                        messagebox.showinfo(APP_TITLE, f"{embedded}/{total} embedded.\n\nOutput:\n{dest}")
+                    if cancelled:
+                        self.status.configure(text=f"Cancelled — {embedded} embedded, {leftover} not started.")
+                        messagebox.showinfo(APP_TITLE, f"Cancelled.\n\n{embedded} embedded, {leftover} not started.\n\nOutput:\n{dest}")
+                    elif embedded:
+                        self.status.configure(text=f"Done — {tally} into “{OUT_FOLDER_NAME}”.")
+                        messagebox.showinfo(APP_TITLE, f"{tally}\n\nOutput:\n{dest}")
                     else:
+                        self.status.configure(text=f"Done — {tally}.")
                         messagebox.showwarning(APP_TITLE, "No clips were embedded. Check the log for skipped/error details.")
         except queue.Empty:
             pass
@@ -311,6 +351,14 @@ class ShotMarkApp:
     def write_log(self, line: str) -> None:
         self.log.insert(END, line + "\n")
         self.log.see(END)
+
+    def cancel(self) -> None:
+        """Request an abort; the worker stops cleanly between files (atomic writes mean no
+        half-file is ever left at the destination)."""
+        if self.cancel_event is not None:
+            self.cancel_event.set()
+        self.cancel_button.configure(state=DISABLED)
+        self.status.configure(text="Cancelling…")
 
     def report_problem(self) -> None:
         """Open a pre-filled problem-report email and reveal the latest log to attach."""
