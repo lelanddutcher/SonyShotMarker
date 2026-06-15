@@ -25,6 +25,9 @@ SIMON7034M01.XML
 .build/
 app/.build/
 app/dist/
+build/
+dist/
+*.spec
 DerivedData/
 
 # ── Generated / test output (derived from real footage) ──

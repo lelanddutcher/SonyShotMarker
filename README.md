@@ -6,6 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)
+![Windows](https://img.shields.io/badge/Windows-port%20in%20progress-blue?logo=windows)
 ![Made for](https://img.shields.io/badge/footage-Sony%20XAVC-orange)
 
 <img src="docs/img/app-ui.png" width="540" alt="Shot Mark Embedder — drop your Sony clips, get markers" />
@@ -17,8 +18,6 @@
 Your Sony camera can drop frame-accurate markers *while you roll* — you hit the **C1** button mid-take, it flags the exact frame. It's one of the most underrated features on the A7S III / FX line. The problem? You get that footage into **Premiere** or **Resolve** and those marks just… vanish. The NLEs don't speak Sony's metadata, so the work you did on set evaporates the second you import.
 
 **Shot Mark Embedder fixes that.** Drop your already-offloaded clips on it, and it reads the Shot Marks straight out of the camera's own metadata and bakes them into a copy of each file as standard Adobe XMP markers — the kind Premiere reads natively on import. No plugin to install, no Creative Cloud extension to babysit, no subscription, and no giant watermark stamped across your footage. The repo also ships a **DaVinci Resolve** script that drops the same marks in as Resolve clip markers.
-
-It's a tiny, single-purpose tool that does one annoying thing perfectly so you never think about it again.
 
 ## Table of contents
 
@@ -36,7 +35,7 @@ It's a tiny, single-purpose tool that does one annoying thing perfectly so you n
 - [Disclaimer](#disclaimer)
 - [License](#license)
 
-## Why this exists (and why I didn't just pay Sony)
+## Why this exists
 
 Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premiere Pro. I tried it. Here's the honest rundown:
 
@@ -45,15 +44,12 @@ Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premier
 - **It's not durable.** Because it's version-locked and machine-specific, it doesn't travel well — different editor, different Premiere build, different software stack, and you're troubleshooting a dead plugin instead of cutting.
 - **It barely helps Resolve.** Sony's own docs note the Catalyst *Prepare Plugin for DaVinci Resolve* **can't import Shot Marks at all** — that lives only in the standalone Catalyst apps.
 
-So you have a feature you already paid for when you bought the camera, locked behind a yearly subscription, behind a plugin that breaks every time Adobe ships an update. No thanks.
-
-**Shot Mark Embedder takes the opposite approach.** Instead of a fragile plugin that has to keep up with Premiere forever, it just translates Sony's marks into the marker format Premiere and Resolve *already* understand, and writes it into the file (or applies it via Resolve's own scripting API). There's nothing to break on the next update — it's just metadata. It's free, it's open source, and it does both NLEs.
-
 ## What you get
 
 | | |
 |---|---|
 | 🎬 **`Shot Mark Embedder.app`** | A tiny macOS app. Drag clips in → get a `footage embedded markers` folder of copies with the marks baked in. Read natively by Premiere Pro, Bridge, and Media Encoder on import. |
+| 🪟 **Windows build** | A Windows port with the same framing and workflow lives in [`windows/`](windows/). It uses the same pure-Python marker engine and is built/tested by GitHub Actions. |
 | 🟦 **`Resolve_ApplyShotMarks.py`** | A drop-in DaVinci Resolve script. One click in `Workspace ▸ Scripts` and every clip in your project gets its Shot Marks as Resolve clip markers — **including clips already cut into a timeline.** |
 | 🧰 **The Python toolkit** | `sony_shotmark.py` (extract + translate to timecode → XMP / CSV / FCPXML / JSON) and batch tooling, if you'd rather script your own pipeline. |
 
@@ -136,6 +132,8 @@ The full reverse-engineering write-up (byte layout, the LTC decode, the KLV keys
 
 ## Build from source
 
+### macOS app
+
 ```bash
 git clone https://github.com/lelanddutcher/SonyShotMarker.git
 cd SonyShotMarker/app
@@ -143,7 +141,24 @@ swift run                 # run it straight away, or…
 bash build_app.sh         # → app/dist/Shot Mark Embedder.app
 ```
 
-Requires macOS 13+ and a Swift toolchain (Xcode or the Swift CLI). The app is **pure Swift** — no Python, no ExifTool, no runtime dependencies. The Python tools in `tools/` are optional and only need Python 3.8+.
+### Windows app
+
+The Windows port lives in [`windows/`](windows/) and is built by `.github/workflows/windows-build.yml` on `windows-latest`. It matches the same basic flow: add/drop clips, choose output, click **Embed Markers**, and get copies in `footage embedded markers/`. The embedder is pure Python and does **not** require ExifTool.
+
+```powershell
+py -3.12 -m venv .venv-win
+.\.venv-win\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-windows.txt
+python -m pytest -q tests
+powershell -ExecutionPolicy Bypass -File windows\build_windows.ps1
+```
+
+Output: `dist\Shot Mark Embedder\Shot Mark Embedder.exe`.
+
+The CI build smoke-runs the packaged EXE with `--smoke`. Real Sony sample clips should still be used for final release validation on an actual Windows machine; the repo's synthetic fixtures prove parser/embedder mechanics and source-file safety.
+
+Requires macOS 13+ and a Swift toolchain (Xcode or the Swift CLI). The Mac app is **pure Swift** — no Python, no ExifTool, no runtime dependencies. The Python tools in `tools/` are optional and only need Python 3.8+.
 
 ## ⚠️ Read this before you delete originals
 
