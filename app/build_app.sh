@@ -22,9 +22,10 @@ cp "../branding/AppIcon_1024.png" "$APP/Contents/Resources/cat.png"   # in-windo
 
 echo "▸ making icon (squircle master with padding + rounded corners)"
 MASTER="../branding/AppIcon_1024.png"
-# regenerate the icon master whenever the source cat is newer (or the master is missing),
-# so a refreshed branding/cat png is always picked up instead of a stale icon
-if [ ! -f "$MASTER" ] || [ "$CAT" -nt "$MASTER" ]; then python3 make_icon.py; fi
+# Use the committed/hand-edited icon as-is — Leland hand-crafts AppIcon_1024.png (there's a
+# matching .psd). Only auto-generate from the cat PNG if the master is missing entirely, so
+# the build never clobbers a hand-edited icon.
+[ -f "$MASTER" ] || python3 make_icon.py
 ICONSET="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
   sips -z $s $s "$MASTER" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
