@@ -5,6 +5,8 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Sparkle
+import Combine
 
 private let tonguePink = Color(red: 0.97, green: 0.34, blue: 0.55)   // ties to the cat's tongue
 private let ink = Color(white: 0.12)        // near-black title text (readable on white)
@@ -13,12 +15,16 @@ private let hairline = Color(white: 0.55)   // borders
 
 @main
 struct EmbedMarkersApp: App {
+    private let updaterController: SPUStandardUpdaterController
     init() {
         let a = CommandLine.arguments
         if let i = a.firstIndex(of: "--embed-cli") {
             EmbedCLI.run(Array(a[(i + 1)...]))
-            exit(0)
+            exit(0)   // headless path never touches Sparkle
         }
+        // Sparkle auto-update: the feed URL + SUPublicEDKey live in Info.plist.
+        updaterController = SPUStandardUpdaterController(startingUpdater: true,
+                                                        updaterDelegate: nil, userDriverDelegate: nil)
     }
     var body: some Scene {
         WindowGroup("Shot Mark Embedder") {
@@ -30,10 +36,33 @@ struct EmbedMarkersApp: App {
                 Button("About Shot Mark Embedder") { showAboutPanel() }
             }
             CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updaterController.updater)
                 Button("Report a Problem…") { RunLog.reportProblem() }
                 Button("Open Logs Folder") { NSWorkspace.shared.activateFileViewerSelecting([RunLog.dir]) }
             }
         }
+    }
+}
+
+/// Publishes whether the Sparkle updater can currently check (to enable/disable the menu item).
+final class CheckForUpdatesViewModel: ObservableObject {
+    @Published var canCheckForUpdates = false
+    init(updater: SPUUpdater) {
+        updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheckForUpdates)
+    }
+}
+
+/// The "Check for Updates…" menu command (Sparkle's documented SwiftUI integration).
+struct CheckForUpdatesView: View {
+    @ObservedObject private var viewModel: CheckForUpdatesViewModel
+    private let updater: SPUUpdater
+    init(updater: SPUUpdater) {
+        self.updater = updater
+        self.viewModel = CheckForUpdatesViewModel(updater: updater)
+    }
+    var body: some View {
+        Button("Check for Updates…", action: updater.checkForUpdates)
+            .disabled(!viewModel.canCheckForUpdates)
     }
 }
 
