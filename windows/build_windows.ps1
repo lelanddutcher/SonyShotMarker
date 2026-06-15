@@ -1,10 +1,10 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-# Build the PyInstaller args. Bundle WinSparkle.dll for auto-update IF it's present:
-# download WinSparkle (https://winsparkle.org), drop WinSparkle.dll into windows\, and it
-# ships next to the exe. Without it the app still runs — the "Check for Updates" button
-# just won't appear (the appcast feed is shared with the macOS Sparkle build).
+# Build the PyInstaller args. Bundle WinSparkle.dll for auto-update if it is present:
+# download WinSparkle from winsparkle.org, drop WinSparkle.dll into the windows folder, and
+# it ships next to the exe. Without it the app still runs; the Check-for-Updates button just
+# will not appear (the appcast feed is shared with the macOS Sparkle build).
 $pyArgs = @(
   "-m", "PyInstaller",
   "--noconfirm", "--clean", "--windowed",
@@ -20,7 +20,7 @@ if (Test-Path "windows\WinSparkle.dll") {
   $pyArgs += @("--add-binary", "windows\WinSparkle.dll;.")
   Write-Host "bundling WinSparkle.dll (auto-update enabled)"
 } else {
-  Write-Host "WinSparkle.dll not found in windows\ — building without auto-update"
+  Write-Host "WinSparkle.dll not present - building without auto-update"
 }
 $pyArgs += "windows\shot_mark_embedder_windows.py"
 
