@@ -18,7 +18,7 @@ echo "▸ assembling bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/EmbedMarkers"
-cp "$CAT" "$APP/Contents/Resources/cat.png"      # in-window logo (Bundle.main)
+cp "../branding/AppIcon_1024.png" "$APP/Contents/Resources/cat.png"   # in-window logo = the green app-icon tile
 
 echo "▸ making icon (squircle master with padding + rounded corners)"
 MASTER="../branding/AppIcon_1024.png"

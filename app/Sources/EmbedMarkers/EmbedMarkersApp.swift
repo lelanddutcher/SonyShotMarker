@@ -114,10 +114,10 @@ struct ContentView: View {
             if let img = catImage() {
                 Image(nsImage: img)
                     .resizable().scaledToFit()
-                    .frame(width: 168)
-                    .blendMode(.multiply)
-                    .opacity(running ? 1.0 : 0.92)
-                    .padding(.leading, -4).padding(.bottom, -10)
+                    .frame(width: 144)
+                    .opacity(running ? 1.0 : 0.95)
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+                    .padding(.leading, 14).padding(.bottom, 14)
                     .allowsHitTesting(false)
             }
         }
