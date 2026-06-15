@@ -12,6 +12,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -53,6 +54,23 @@ def resource_path(path: Path) -> Path:
     return Path(getattr(sys, "_MEIPASS", ROOT)) / path
 
 
+def _eta(seconds: float) -> str:
+    sec = int(round(seconds))
+    if sec < 60:
+        return f"{sec}s"
+    m, r = divmod(sec, 60)
+    return f"{m}m" if r == 0 else f"{m}m {r}s"
+
+
+def _throughput_line(name: str, done_bytes: int, total_bytes: int, bps: float, eta: float) -> str:
+    s = f"{name}  ·  {run_log._human(done_bytes)} / {run_log._human(total_bytes)}"
+    if bps > 0:
+        s += f"  ·  {run_log._human(int(bps))}/s"
+    if eta > 1:
+        s += f"  ·  ~{_eta(eta)}"
+    return s
+
+
 def parse_drop_files(raw: str) -> list[str]:
     """Parse Tk DND's Windows-friendly file-list format."""
     root = tk.Tcl()
@@ -73,6 +91,7 @@ class ShotMarkApp:
         self.cat_image: tk.PhotoImage | None = None
         self.last_log: str | None = None
         self.cancel_event: threading.Event | None = None
+        self.last_progress_at = 0.0
 
         root.title(APP_TITLE)
         root.geometry("640x580")
@@ -258,6 +277,7 @@ class ShotMarkApp:
                 return
 
         self.cancel_event = threading.Event()
+        self.last_progress_at = time.time()
         self.running = True
         self.progress.configure(value=0.0)
         self.status.configure(text="Starting…")
@@ -279,6 +299,17 @@ class ShotMarkApp:
         cancelled = False
         done = 0
 
+        # size-weighted byte progress (advance the bar by bytes, not file count)
+        sizes = []
+        for f in files:
+            try:
+                sizes.append(os.path.getsize(f))
+            except OSError:
+                sizes.append(0)
+        total_bytes = max(1, sum(sizes))
+        bytes_before = 0
+        run_start = time.time()
+
         rl = run_log.RunLog()
         try:
             _ok, _required, free = S.enough_output_space([str(f) for f in files], str(dest_dir))
@@ -292,17 +323,34 @@ class ShotMarkApp:
                 cancelled = True
                 break
             self.events.put(("status", f"Embedding {src.name}…  ({index}/{total})"))
+
+            def on_bytes(copied, _file_total, _name=src.name, _before=bytes_before):
+                done_bytes = _before + copied
+                elapsed = time.time() - run_start
+                bps = done_bytes / elapsed if elapsed > 0.5 else 0
+                eta = (total_bytes - done_bytes) / bps if bps > 0 else 0
+                self.events.put(("progress", min(1.0, done_bytes / total_bytes)))
+                self.events.put(("status", _throughput_line(_name, done_bytes, total_bytes, bps, eta)))
+
             try:
-                rec, msg = embed_batch.process_one(str(src), str(dest_dir))
+                rec, msg = embed_batch.process_one(
+                    str(src), str(dest_dir), on_bytes=on_bytes, cancel=cancel.is_set
+                )
             except Exception as exc:  # never let one bad clip kill the batch silently
                 rec, msg = {"status": "error", "state": "err"}, f"✗ {src.name} — {exc}"
+
+            if rec.get("status") == "cancelled":   # cancelled mid-copy
+                cancelled = True
+                break
+
             results.append(rec)
             done += 1
+            bytes_before += sizes[index - 1]
             if rec.get("status") == "embedded":
                 embedded += 1
             rl.result(msg)
             self.events.put(("log", msg))
-            self.events.put(("progress", index / total))
+            self.events.put(("progress", min(1.0, bytes_before / total_bytes)))
 
         tally = embed_batch.summarize(results)
         leftover = total - done
@@ -328,6 +376,7 @@ class ShotMarkApp:
                     self.write_log(str(payload))
                 elif kind == "progress":
                     self.progress.configure(value=float(payload))  # type: ignore[arg-type]
+                    self.last_progress_at = time.time()
                 elif kind == "done":
                     embedded, total, dest, log_path, tally, cancelled, leftover = payload  # type: ignore[misc]
                     self.last_log = log_path
@@ -346,6 +395,9 @@ class ShotMarkApp:
                         messagebox.showwarning(APP_TITLE, "No clips were embedded. Check the log for skipped/error details.")
         except queue.Empty:
             pass
+        # stall watchdog: bytes stopped flowing for >30s → say so instead of a frozen bar
+        if self.running and self.last_progress_at and time.time() - self.last_progress_at > 30:
+            self.status.configure(text="Still working — the drive may be slow or disconnected…")
         self.root.after(80, self.poll_events)
 
     def write_log(self, line: str) -> None:
