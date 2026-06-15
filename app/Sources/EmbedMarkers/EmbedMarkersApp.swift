@@ -90,6 +90,7 @@ enum EmbedCLI {
             case .skippedNoMarks:         skipped += 1; line = "– \(f.lastPathComponent): no Shot Marks"
             case .notSony:                skipped += 1; line = "– \(f.lastPathComponent): not Sony"
             case .failed(let e):          failed += 1; line = "✗ \(f.lastPathComponent): \(e)"
+            case .cancelled:              line = "⏹ \(f.lastPathComponent): cancelled"
             }
             print(line); log.append("  " + line)
         }
@@ -305,11 +306,44 @@ struct ContentView: View {
                 log.append("  \(f.lastPathComponent)  \(RunLog.human(Int64(sz)))")
             }
             log.append("results:")
+            // size-weighted progress: advance the bar by bytes copied, not file count.
+            let sizes: [Int64] = queue.map { (try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0 }
+            let totalBytes = max(Int64(1), sizes.reduce(0, +))
+            var bytesBefore: Int64 = 0
+            let runStart = Date()
+
+            // stall watchdog: if cross-volume bytes stop flowing for >30s, say so out loud.
+            let mon = ProgressMonitor()
+            let watchdog = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+            watchdog.schedule(deadline: .now() + 5, repeating: 5)
+            watchdog.setEventHandler {
+                if let name = mon.stalledFile(after: 30) {
+                    DispatchQueue.main.async { statusLine = "Still working on \(name) — the drive may be slow or disconnected…" }
+                }
+            }
+            watchdog.resume()
+
             var cancelled = false
-            for f in queue {
+            for (idx, f) in queue.enumerated() {
                 if token.isCancelled { cancelled = true; break }   // cancel between files
+                let fileSize = sizes[idx]
+                mon.begin(name: f.lastPathComponent)
                 DispatchQueue.main.async { statusLine = "Embedding \(f.lastPathComponent)…  (\(done + 1)/\(total))" }
-                var res = Embedder.embed(src: f, intoFolder: folder)
+                var res = Embedder.embed(src: f, intoFolder: folder, onBytes: { copied, _ in
+                    mon.touch()
+                    let doneBytes = bytesBefore + copied
+                    let elapsed = Date().timeIntervalSince(runStart)
+                    let bps = elapsed > 0.5 ? Double(doneBytes) / elapsed : 0
+                    let eta = bps > 0 ? Double(totalBytes - doneBytes) / bps : 0
+                    let frac = min(1.0, Double(doneBytes) / Double(totalBytes))
+                    DispatchQueue.main.async {
+                        progress = frac
+                        statusLine = throughputLine(name: f.lastPathComponent, doneBytes: doneBytes,
+                                                    totalBytes: totalBytes, bps: bps, eta: eta)
+                    }
+                }, cancel: token)
+                mon.end()
+                if case .cancelled = res { cancelled = true; break }   // cancel mid-file
                 // post-embed verify: re-open the copy; a copy that fails is deleted + failed.
                 if case .embedded(let n, let dest) = res {
                     let v = Embedder.verifyEmbedded(dest, expected: n)
@@ -319,17 +353,20 @@ struct ContentView: View {
                     }
                 }
                 done += 1
-                let frac = Double(done) / Double(total)
+                bytesBefore += fileSize
                 let line: String
                 switch res {
                 case .embedded(let n, _): embedded += 1; line = "✓ \(f.lastPathComponent) — \(n) mark(s), verified  (\(done)/\(total))"
                 case .skippedNoMarks:     skipped += 1; line = "– \(f.lastPathComponent): no Shot Marks  (\(done)/\(total))"
                 case .notSony:            skipped += 1; line = "– \(f.lastPathComponent): not Sony  (\(done)/\(total))"
                 case .failed(let e):      failed += 1; line = "✗ \(f.lastPathComponent): \(e)  (\(done)/\(total))"
+                case .cancelled:          line = "⏹ \(f.lastPathComponent): cancelled  (\(done)/\(total))"
                 }
                 log.append("  " + line)
+                let frac = Double(bytesBefore) / Double(totalBytes)
                 DispatchQueue.main.async { progress = frac; statusLine = line }
             }
+            watchdog.cancel()
             let tally = summaryTally(embedded: embedded, skipped: skipped, failed: failed)
             let leftover = total - done
             if cancelled {
@@ -353,4 +390,35 @@ struct ContentView: View {
         if failed > 0 { parts.append("✗\(failed)") }
         return parts.joined(separator: " · ")
     }
+}
+
+/// Thread-safe progress heartbeat: the worker stamps byte activity; the watchdog timer reads
+/// it to decide whether a cross-volume copy has stalled.
+final class ProgressMonitor {
+    private let lock = NSLock()
+    private var lastByteAt = Date()
+    private var name = ""
+    private var copying = false
+    func begin(name: String) { lock.lock(); self.name = name; copying = true; lastByteAt = Date(); lock.unlock() }
+    func touch() { lock.lock(); lastByteAt = Date(); lock.unlock() }
+    func end() { lock.lock(); copying = false; lock.unlock() }
+    func stalledFile(after seconds: TimeInterval) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return (copying && Date().timeIntervalSince(lastByteAt) > seconds) ? name : nil
+    }
+}
+
+func throughputLine(name: String, doneBytes: Int64, totalBytes: Int64, bps: Double, eta: Double) -> String {
+    let f = ByteCountFormatter(); f.countStyle = .file
+    var s = "\(name)  ·  \(f.string(fromByteCount: doneBytes)) / \(f.string(fromByteCount: totalBytes))"
+    if bps > 0 { s += "  ·  \(f.string(fromByteCount: Int64(bps)))/s" }
+    if eta > 1 { s += "  ·  ~\(formatETA(eta))" }
+    return s
+}
+
+func formatETA(_ s: Double) -> String {
+    let sec = Int(s.rounded())
+    if sec < 60 { return "\(sec)s" }
+    let m = sec / 60, r = sec % 60
+    return r == 0 ? "\(m)m" : "\(m)m \(r)s"
 }

@@ -20,7 +20,7 @@ enum Embedder {
         "50":(50,1),"59.94":(60000,1001),"60":(60,1),"100":(100,1),
         "119.88":(120000,1001),"120":(120,1)]
 
-    enum Result { case embedded(Int, URL), skippedNoMarks, notSony, failed(String) }
+    enum Result { case embedded(Int, URL), skippedNoMarks, notSony, failed(String), cancelled }
 
     // MARK: parsing helpers
     private static func fpsRational(_ s: String) -> (Int, Int) {
@@ -81,10 +81,7 @@ enum Embedder {
     }
 
     static func readMarks(from url: URL) -> [ShotMark]? {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
-              let open = data.range(of: Data("<NonRealTimeMeta".utf8)),
-              let close = data.range(of: Data("</NonRealTimeMeta>".utf8)) else { return nil }
-        let xml = String(decoding: data[open.lowerBound..<close.upperBound], as: UTF8.self)
+        guard let xml = locateNonRealTimeMeta(in: url) else { return nil }
 
         let (num, den) = fpsRational(attr(xml, "VideoFrame", "captureFps").isEmpty
                                      ? attr(xml, "VideoFrame", "formatFps") : attr(xml, "VideoFrame", "captureFps"))
@@ -121,10 +118,7 @@ enum Embedder {
 
     // MARK: XMP build
     static func xmpFrameRate(from url: URL) -> String {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
-              let open = data.range(of: Data("<NonRealTimeMeta".utf8)),
-              let close = data.range(of: Data("</NonRealTimeMeta>".utf8)) else { return "f30" }
-        let xml = String(decoding: data[open.lowerBound..<close.upperBound], as: UTF8.self)
+        guard let xml = locateNonRealTimeMeta(in: url) else { return "f30" }
         let fps = attr(xml, "VideoFrame", "captureFps").isEmpty
             ? attr(xml, "VideoFrame", "formatFps") : attr(xml, "VideoFrame", "captureFps")
         let (num, den) = fpsRational(fps)
@@ -189,12 +183,89 @@ enum Embedder {
         return r
     }
 
+    // Seek-based box walk: read only the 8/16-byte headers and seek past payloads, so a
+    // multi-GB `mdat` is skipped, never paged in. Mirrors handoff/swift/SonyShotMarks.swift.
+    private static func topBoxesStreaming(_ fh: FileHandle, _ end: Int) -> [Mp4Box] {
+        var out = [Mp4Box](); var pos = 0
+        while pos + 8 <= end {
+            try? fh.seek(toOffset: UInt64(pos))
+            guard let h = try? fh.read(upToCount: 8), h.count == 8 else { break }
+            var size = beU32(h, 0)
+            let type = boxType(h, 4)
+            if size == 1 {
+                guard let e = try? fh.read(upToCount: 8), e.count == 8 else { break }
+                size = beU64(e, 0)
+            } else if size == 0 { size = end - pos }
+            if size < 8 || pos + size > end { break }
+            out.append(Mp4Box(type: type, offset: pos, size: size))
+            pos += size
+        }
+        return out
+    }
+
+    /// Locate the NonRealTimeMeta XML by reading only the small non-`mdat` boxes (≤4 MB each)
+    /// — no whole-file scan. Replaces the old Data(contentsOf:.mappedIfSafe)+range(of:) read.
+    private static func locateNonRealTimeMeta(in url: URL) -> String? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        let end = Int((try? fh.seekToEnd()) ?? 0)
+        for b in topBoxesStreaming(fh, end) where b.type != "mdat" {
+            try? fh.seek(toOffset: UInt64(b.offset))
+            let cap = min(b.size, 4_000_000)
+            guard let data = try? fh.read(upToCount: cap),
+                  let lo = data.range(of: Data("<NonRealTimeMeta".utf8)),
+                  let hi = data.range(of: Data("</NonRealTimeMeta>".utf8)) else { continue }
+            return String(decoding: data[lo.lowerBound..<hi.upperBound], as: UTF8.self)
+        }
+        return nil
+    }
+
+    private static func volumeURL(_ u: URL) -> URL? {
+        (try? u.resourceValues(forKeys: [.volumeURLKey]))?.volume
+    }
+
+    /// True when src and the destination live on the same volume (→ APFS clone, ~free).
+    private static func sameVolume(_ src: URL, _ destFolder: URL) -> Bool {
+        var probe = destFolder
+        while !FileManager.default.fileExists(atPath: probe.path) {
+            let parent = probe.deletingLastPathComponent()
+            if parent.path == probe.path { break }
+            probe = parent
+        }
+        guard let a = volumeURL(src), let b = volumeURL(probe) else { return false }
+        return a == b
+    }
+
+    /// Chunked byte copy with live progress + mid-file cancel (cross-volume path). Returns
+    /// false if cancelled (caller cleans up the partial). Same-volume copies clone instead.
+    private static func chunkedCopy(from src: URL, to dst: URL,
+                                    onBytes: ((Int64, Int64) -> Void)?, cancel: CancelToken?) throws -> Bool {
+        let total = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+        FileManager.default.createFile(atPath: dst.path, contents: nil)
+        let r = try FileHandle(forReadingFrom: src)
+        let w = try FileHandle(forWritingTo: dst)
+        defer { try? r.close(); try? w.close() }
+        let chunk = 4 * 1024 * 1024
+        var copied: Int64 = 0
+        onBytes?(0, total)
+        while true {
+            if cancel?.isCancelled == true { return false }
+            let buf = (try r.read(upToCount: chunk)) ?? Data()
+            if buf.isEmpty { break }
+            try w.write(contentsOf: buf)
+            copied += Int64(buf.count)
+            onBytes?(copied, total)
+        }
+        try w.synchronize()
+        return true
+    }
+
     // MARK: embed — write the XMP into the `free` box BEFORE mdat (where Premiere reads
     // it), and neutralize any existing Adobe XMP box so ours wins. mdat never moves, so
     // chunk offsets stay valid — no rewrite, no faststart needed.
-    static func embed(src: URL, intoFolder folder: URL) -> Result {
-        guard let data = try? Data(contentsOf: src, options: .mappedIfSafe),
-              let marks0 = readMarks(from: src) else { return .notSony }
+    static func embed(src: URL, intoFolder folder: URL,
+                      onBytes: ((Int64, Int64) -> Void)? = nil, cancel: CancelToken? = nil) -> Result {
+        guard let marks0 = readMarks(from: src) else { return .notSony }
         let user = marks0.filter { $0.label.hasPrefix("_ShotMark") }
         guard !user.isEmpty else { return .skippedNoMarks }
         guard ["mp4","mov","m4v"].contains(src.pathExtension.lowercased()) else { return .skippedNoMarks }
@@ -209,29 +280,44 @@ enum Embedder {
         uuidBox.append(xmp)
         let L = uuidBox.count
 
-        let boxes = topBoxes(data)
+        // Parse only the boxes BEFORE mdat by seeking headers — never page in the media.
+        guard let rfh = try? FileHandle(forReadingFrom: src) else { return .failed("cannot open source") }
+        let end = Int((try? rfh.seekToEnd()) ?? 0)
+        let boxes = topBoxesStreaming(rfh, end)
         guard let mdat = boxes.first(where: { $0.type == "mdat" })?.offset else {
-            return .failed("no mdat box")
+            try? rfh.close(); return .failed("no mdat box")
         }
         guard let free = boxes.first(where: {
             ($0.type == "free" || $0.type == "skip") && $0.offset < mdat && $0.size >= L + 8
         }) else {
-            return .failed("no reusable free space before mdat (need \(L + 8) bytes)")
+            try? rfh.close(); return .failed("no reusable free space before mdat (need \(L + 8) bytes)")
         }
-        // existing Adobe XMP boxes before mdat → list them to neutralize
         var neutralize = [Int]()
         for b in boxes where b.type == "uuid" && b.offset < mdat && b.size >= 24 {
-            let u = data.startIndex + b.offset + 8
-            if Array(data[u..<u+16]) == adobeUUID { neutralize.append(b.offset) }
+            try? rfh.seek(toOffset: UInt64(b.offset + 8))
+            if (try? rfh.read(upToCount: 16)) == Data(adobeUUID) { neutralize.append(b.offset) }
         }
+        try? rfh.close()
 
         let fm = FileManager.default
         do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) } catch {}
         let dest = folder.appendingPathComponent(src.lastPathComponent)
         let partial = folder.appendingPathComponent(src.lastPathComponent + ".partial")
+        let same = sameVolume(src, folder)
         do {
             if fm.fileExists(atPath: partial.path) { try fm.removeItem(at: partial) }
-            try fm.copyItem(at: src, to: partial)   // CoW clone on the same volume; full copy cross-volume
+            if same {
+                // same volume → instant APFS clone (~0 extra bytes); report it as complete.
+                try fm.copyItem(at: src, to: partial)
+                let total = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+                onBytes?(total, total)
+            } else {
+                // cross volume → real byte copy with a live bar + mid-file cancel.
+                if try !chunkedCopy(from: src, to: partial, onBytes: onBytes, cancel: cancel) {
+                    try? fm.removeItem(at: partial)
+                    return .cancelled
+                }
+            }
             let h = try FileHandle(forWritingTo: partial)
             // 1) neutralize prior Adobe XMP boxes (type 'uuid' -> 'free')
             for off in neutralize {
