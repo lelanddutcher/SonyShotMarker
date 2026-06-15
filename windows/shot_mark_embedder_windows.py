@@ -31,6 +31,8 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import embed_batch  # type: ignore[import-not-found]  # noqa: E402
+import run_log  # type: ignore[import-not-found]  # noqa: E402  -- per-run diagnostic log
+import sony_shotmark as S  # type: ignore[import-not-found]  # noqa: E402  -- free-space preflight
 
 try:  # optional, packaged in the Windows release build
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
@@ -69,6 +71,7 @@ class ShotMarkApp:
         self.running = False
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.cat_image: tk.PhotoImage | None = None
+        self.last_log: str | None = None
 
         root.title(APP_TITLE)
         root.geometry("640x580")
@@ -162,6 +165,9 @@ class ShotMarkApp:
 
         self.run_button = ttk.Button(bottom, text="Embed Markers", style="Pink.TButton", command=self.run)
         self.run_button.pack(side=RIGHT, ipadx=14, ipady=7)
+        ttk.Button(bottom, text="Report a Problem…", style="Plain.TButton", command=self.report_problem).pack(
+            side=RIGHT, padx=(0, 12)
+        )
         self.update_state()
 
     def on_drop(self, event) -> None:  # type: ignore[no-untyped-def]
@@ -219,6 +225,19 @@ class ShotMarkApp:
     def run(self) -> None:
         if not self.can_run() or self.output_dir is None:
             return
+        try:
+            space_ok, required, free = S.enough_output_space(
+                [str(p) for p in self.files], str(self.output_dir)
+            )
+        except Exception:
+            space_ok, required, free = True, -1, -1
+        if not space_ok and not messagebox.askyesno(
+            APP_TITLE,
+            "The output drive may not have enough free space.\n\n"
+            f"Needs about {run_log._human(required)}, but only "
+            f"{run_log._human(free)} is free.\n\nEmbed anyway?",
+        ):
+            return
         self.running = True
         self.progress.configure(value=0.0)
         self.status.configure(text="Starting…")
@@ -234,14 +253,35 @@ class ShotMarkApp:
         dest_dir.mkdir(parents=True, exist_ok=True)
         total = len(files)
         embedded = 0
+
+        rl = run_log.RunLog()
+        try:
+            _ok, _required, free = S.enough_output_space([str(f) for f in files], str(dest_dir))
+        except Exception:
+            free = -1
+        rl.header(str(dest_dir), dest_volume=str(out), dest_free=free)
+        rl.inputs([str(f) for f in files])
+
         for index, src in enumerate(files, start=1):
             self.events.put(("status", f"Embedding {src.name}…  ({index}/{total})"))
-            rec, msg = embed_batch.process_one(str(src), str(dest_dir))
-            if rec["status"] == "embedded":
+            try:
+                rec, msg = embed_batch.process_one(str(src), str(dest_dir))
+            except Exception as exc:  # never let one bad clip kill the batch silently
+                rec, msg = {"status": "error"}, f"✗ {src.name} — {exc}"
+            if rec.get("status") == "embedded":
                 embedded += 1
+            rl.result(msg)
             self.events.put(("log", msg))
             self.events.put(("progress", index / total))
-        self.events.put(("done", (embedded, total, dest_dir)))
+
+        rl.summary(f"{embedded}/{total} embedded")
+        try:
+            log_path = rl.write()
+        except Exception:
+            log_path = None
+        if log_path:
+            self.events.put(("log", f"log saved: {log_path}"))
+        self.events.put(("done", (embedded, total, dest_dir, log_path)))
 
     def poll_events(self) -> None:
         try:
@@ -254,7 +294,8 @@ class ShotMarkApp:
                 elif kind == "progress":
                     self.progress.configure(value=float(payload))  # type: ignore[arg-type]
                 elif kind == "done":
-                    embedded, total, dest = payload  # type: ignore[misc]
+                    embedded, total, dest, log_path = payload  # type: ignore[misc]
+                    self.last_log = log_path
                     self.running = False
                     self.status.configure(text=f"Done — {embedded}/{total} embedded into “{OUT_FOLDER_NAME}”.")
                     self.run_button.configure(text="Embed Markers")
@@ -270,6 +311,46 @@ class ShotMarkApp:
     def write_log(self, line: str) -> None:
         self.log.insert(END, line + "\n")
         self.log.see(END)
+
+    def report_problem(self) -> None:
+        """Open a pre-filled problem-report email and reveal the latest log to attach."""
+        import urllib.parse
+        import webbrowser
+
+        log_path = self.last_log or run_log.latest_log()
+        subject = f"Shot Mark Embedder — problem report (v{run_log.RunLog().app_version})"
+        body_lines = [
+            "Describe what happened:",
+            "",
+            "",
+            "",
+            "— Please attach the log file that just opened in your file browser. —",
+        ]
+        if log_path:
+            body_lines += ["", f"Log: {log_path}"]
+        query = urllib.parse.urlencode({"subject": subject, "body": "\n".join(body_lines)})
+        try:
+            webbrowser.open(f"mailto:leland@lelanddutcher.com?{query}")
+        except Exception:
+            pass
+        self.reveal_log(log_path)
+
+    def reveal_log(self, log_path) -> None:  # type: ignore[no-untyped-def]
+        """Select the log in the OS file browser so the user can drag it onto the email."""
+        if not log_path or not os.path.exists(log_path):
+            messagebox.showinfo(APP_TITLE, "No log yet — run an embed first, then Report a Problem.")
+            return
+        try:
+            if sys.platform == "win32":
+                os.system(f'explorer /select,"{os.path.normpath(log_path)}"')
+            elif sys.platform == "darwin":
+                os.system(f'open -R "{log_path}"')
+            elif hasattr(os, "startfile"):
+                os.startfile(os.path.dirname(log_path))  # type: ignore[attr-defined]
+            else:
+                os.system(f'xdg-open "{os.path.dirname(log_path)}"')
+        except Exception:
+            messagebox.showinfo(APP_TITLE, f"Latest log:\n{log_path}")
 
     def on_close(self) -> None:
         if self.running and not messagebox.askyesno(APP_TITLE, "Embedding is still running. Close anyway?"):
