@@ -42,6 +42,8 @@ except Exception:  # pragma: no cover - exercised only when dependency absent
     TkinterDnD = None
 
 APP_TITLE = "Shot Mark Embedder"
+APP_VERSION = "0.2.0"
+APPCAST_URL = "https://raw.githubusercontent.com/lelanddutcher/SonyShotMarker/main/appcast.xml"
 OUT_FOLDER_NAME = embed_batch.OUT_FOLDER_NAME
 VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
 TONGUE = "#f7578c"
@@ -81,6 +83,21 @@ def parse_drop_files(raw: str) -> list[str]:
         root.destroy()
 
 
+def _load_winsparkle():
+    """Load WinSparkle.dll if present (Windows only). Returns the CDLL or None, so the app
+    runs fine without it and --smoke works on any platform."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    for name in ("WinSparkle.dll", "winsparkle.dll", os.path.join(base, "WinSparkle.dll")):
+        try:
+            return ctypes.cdll.LoadLibrary(name)
+        except OSError:
+            continue
+    return None
+
+
 class ShotMarkApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -92,6 +109,7 @@ class ShotMarkApp:
         self.last_log: str | None = None
         self.cancel_event: threading.Event | None = None
         self.last_progress_at = 0.0
+        self.winsparkle = None
 
         root.title(APP_TITLE)
         root.geometry("640x580")
@@ -100,6 +118,7 @@ class ShotMarkApp:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.build_ui()
+        self._init_updates()
         self.poll_events()
 
     def build_ui(self) -> None:
@@ -190,6 +209,8 @@ class ShotMarkApp:
         ttk.Button(bottom, text="Report a Problem…", style="Plain.TButton", command=self.report_problem).pack(
             side=RIGHT, padx=(0, 12)
         )
+        self.update_button = ttk.Button(bottom, text="Check for Updates", style="Plain.TButton", command=self.check_updates)
+        # packed by _init_updates() only when WinSparkle is available
         self.update_state()
 
     def on_drop(self, event) -> None:  # type: ignore[no-untyped-def]
@@ -452,9 +473,41 @@ class ShotMarkApp:
         except Exception:
             messagebox.showinfo(APP_TITLE, f"Latest log:\n{log_path}")
 
+    def _init_updates(self) -> None:
+        """Wire WinSparkle auto-update (Windows, when the DLL is bundled). No-op elsewhere —
+        same appcast feed the macOS Sparkle build uses, so both platforms share one feed."""
+        self.winsparkle = _load_winsparkle()
+        if self.winsparkle is None:
+            return
+        try:
+            import ctypes
+            ws = self.winsparkle
+            ws.win_sparkle_set_appcast_url.argtypes = [ctypes.c_char_p]
+            ws.win_sparkle_set_app_details.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p]
+            ws.win_sparkle_set_appcast_url(APPCAST_URL.encode("utf-8"))
+            ws.win_sparkle_set_app_details("Leland Dutcher", APP_TITLE, APP_VERSION)
+            ws.win_sparkle_init()
+            self.update_button.pack(side=RIGHT, padx=(0, 12))
+        except Exception:
+            self.winsparkle = None
+
+    def check_updates(self) -> None:
+        if self.winsparkle is not None:
+            try:
+                self.winsparkle.win_sparkle_check_update_with_ui()
+                return
+            except Exception:
+                pass
+        messagebox.showinfo(APP_TITLE, "Automatic updates are available in the packaged Windows build.")
+
     def on_close(self) -> None:
         if self.running and not messagebox.askyesno(APP_TITLE, "Embedding is still running. Close anyway?"):
             return
+        if self.winsparkle is not None:
+            try:
+                self.winsparkle.win_sparkle_cleanup()
+            except Exception:
+                pass
         self.root.destroy()
 
 
