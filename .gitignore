@@ -49,3 +49,9 @@ __pycache__/
 
 # ── Internal cross-project handoff (OpenLoupe integration) — not part of the public tool ──
 handoff/
+
+# ── Secrets — NEVER commit (Sparkle EdDSA signing key, etc.) ──
+.env
+.env.*
+*.env
+sparkle_private_key*
