@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparkle / WinSparkle update feed for Shot Mark Embedder.
+
+  This is the feed both the macOS app (Sparkle) and the Windows app (WinSparkle) poll.
+  It currently has NO <item> entries, so apps report "you're up to date".
+
+  To publish an update, run scripts/release.sh — it EdDSA-signs the zip and prints a ready
+  <item> to paste under <channel> below; commit + push and the update goes live. The macOS
+  app verifies each download against SUPublicEDKey, so a tampered/unsigned build is rejected.
+
+  Hosted at: https://raw.githubusercontent.com/lelanddutcher/SonyShotMarker/main/appcast.xml
+-->
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Shot Mark Embedder</title>
+    <link>https://raw.githubusercontent.com/lelanddutcher/SonyShotMarker/main/appcast.xml</link>
+    <description>Frame-accurate Sony Shot Marks → Premiere Pro &amp; DaVinci Resolve. Update feed.</description>
+    <language>en</language>
+
+    <!-- release.sh appends signed <item> entries here. Example shape:
+    <item>
+      <title>0.2.0</title>
+      <sparkle:version>0.2.0</sparkle:version>
+      <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <pubDate>Sun, 15 Jun 2026 00:00:00 +0000</pubDate>
+      <enclosure url="https://github.com/lelanddutcher/SonyShotMarker/releases/download/v0.2.0/Shot-Mark-Embedder-v0.2.0.zip"
+                 sparkle:edSignature="BASE64_SIGNATURE_FROM_sign_update" length="12345678"
+                 type="application/octet-stream"/>
+    </item>
+    -->
+  </channel>
+</rss>
