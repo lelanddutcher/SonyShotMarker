@@ -22,7 +22,9 @@ cp "$CAT" "$APP/Contents/Resources/cat.png"      # in-window logo (Bundle.main)
 
 echo "▸ making icon (squircle master with padding + rounded corners)"
 MASTER="../branding/AppIcon_1024.png"
-[ -f "$MASTER" ] || python3 make_icon.py
+# regenerate the icon master whenever the source cat is newer (or the master is missing),
+# so a refreshed branding/cat png is always picked up instead of a stale icon
+if [ ! -f "$MASTER" ] || [ "$CAT" -nt "$MASTER" ]; then python3 make_icon.py; fi
 ICONSET="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
   sips -z $s $s "$MASTER" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null

@@ -43,3 +43,6 @@ __pycache__/
 
 # ── Release artifacts (the .app ships via GitHub Releases, not git) ──
 *.zip
+
+# ── Internal cross-project handoff (OpenLoupe integration) — not part of the public tool ──
+handoff/
