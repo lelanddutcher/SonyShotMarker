@@ -111,7 +111,7 @@ class ShotMarkApp:
         self.last_progress_at = 0.0
         self.winsparkle = None
 
-        root.title(APP_TITLE)
+        root.title(f"{APP_TITLE} — Experimental")
         root.geometry("640x580")
         root.minsize(640, 580)
         root.configure(bg="#f6f6f6")
@@ -143,10 +143,12 @@ class ShotMarkApp:
         ).pack(anchor="w")
         tk.Label(
             frame,
-            text="Drop already-offloaded Sony clips → a “footage embedded markers” folder for Premiere.",
+            text="Drop already-offloaded Sony clips → a “footage embedded markers” folder for Premiere.\n"
+                 "Experimental Windows build — verify on your footage before deleting originals.",
             bg="#f6f6f6",
             fg=INK_SOFT,
             font=("Segoe UI", 10),
+            justify="left",
         ).pack(anchor="w", pady=(0, 18))
 
         self.drop = tk.Frame(frame, bg="#ffffff", highlightbackground=HAIRLINE, highlightthickness=2, height=148)

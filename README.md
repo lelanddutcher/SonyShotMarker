@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/macOS-13%2B-black?logo=apple)
-![Windows](https://img.shields.io/badge/Windows-port%20in%20progress-blue?logo=windows)
+![Windows](https://img.shields.io/badge/Windows-experimental-orange?logo=windows)
 ![Made for](https://img.shields.io/badge/footage-Sony%20XAVC-orange)
 
 <img src="docs/img/app-ui.png" width="540" alt="Shot Mark Embedder — drop your Sony clips, get markers" />
@@ -49,7 +49,7 @@ Sony *does* have an official answer: the **Catalyst Prepare Plugin** for Premier
 | | |
 |---|---|
 | 🎬 **`Shot Mark Embedder.app`** | A tiny macOS app. Drag clips in → get a `footage embedded markers` folder of copies with the marks baked in. Read natively by Premiere Pro, Bridge, and Media Encoder on import. |
-| 🪟 **Windows build** | A Windows port with the same framing and workflow lives in [`windows/`](windows/). It uses the same pure-Python marker engine and is built/tested by GitHub Actions. |
+| 🪟 **Windows build** *(experimental)* | An **experimental** Windows port with the same framing and workflow lives in [`windows/`](windows/). It runs the same pure-Python marker engine as the Mac app and is built + smoke-tested by GitHub Actions on `windows-latest` — but it hasn't had a full real-footage validation pass yet, so treat it as beta. |
 | 🟦 **`Resolve_ApplyShotMarks.py`** | A drop-in DaVinci Resolve script. One click in `Workspace ▸ Scripts` and every clip in your project gets its Shot Marks as Resolve clip markers — **including clips already cut into a timeline.** |
 | 🧰 **The Python toolkit** | `sony_shotmark.py` (extract + translate to timecode → XMP / CSV / FCPXML / JSON) and batch tooling, if you'd rather script your own pipeline. |
 
@@ -141,7 +141,9 @@ swift run                 # run it straight away, or…
 bash build_app.sh         # → app/dist/Shot Mark Embedder.app
 ```
 
-### Windows app
+### Windows app *(experimental)*
+
+> ⚠️ **Experimental.** The Windows port is built and smoke-tested by CI on `windows-latest`, but has not yet had a full validation pass on real Sony footage on a Windows machine. It shares the **exact same pure-Python marker engine** as the Mac app — so the core extract/embed is identical and never touches your originals — but treat the Windows GUI as beta until you've run it end-to-end on your own hardware.
 
 The Windows port lives in [`windows/`](windows/) and is built by `.github/workflows/windows-build.yml` on `windows-latest`. It matches the same basic flow: add/drop clips, choose output, click **Embed Markers**, and get copies in `footage embedded markers/`. The embedder is pure Python and does **not** require ExifTool.
 

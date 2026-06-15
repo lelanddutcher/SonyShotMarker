@@ -1,4 +1,6 @@
-# Shot Mark Embedder — Windows port
+# Shot Mark Embedder — Windows port *(experimental)*
+
+> ⚠️ **Experimental / beta.** Built and smoke-tested by CI on `windows-latest`, but not yet validated end-to-end on real Sony footage on a Windows machine. The marker engine is shared verbatim with the Mac app (identical, source-safe embed); the Tkinter GUI wrapper is what still needs real-world shakeout. The packaged `.exe` is **unsigned**, so Windows SmartScreen will show an "Unknown Publisher" prompt — choose **More info → Run anyway**.
 
 This is the Windows shell for the same workflow as the macOS app:
 
