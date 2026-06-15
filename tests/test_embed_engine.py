@@ -11,6 +11,12 @@ sony_shotmark = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = sony_shotmark
 spec.loader.exec_module(sony_shotmark)
 
+spec_rl = importlib.util.spec_from_file_location("run_log", TOOLS / "run_log.py")
+assert spec_rl is not None and spec_rl.loader is not None
+run_log = importlib.util.module_from_spec(spec_rl)
+sys.modules[spec_rl.name] = run_log
+spec_rl.loader.exec_module(run_log)
+
 ADOBE_UUID = bytes.fromhex("BE7ACFCB97A942E89C71999491E3AFAC")
 
 
@@ -162,3 +168,20 @@ def test_enough_output_space_ok_when_room(tmp_path, monkeypatch):
 
     ok, required, free = sony_shotmark.enough_output_space([str(clip)], str(tmp_path))
     assert ok is True
+
+
+def test_run_log_writes_records_and_finds_latest(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOTMARK_LOG_DIR", str(tmp_path / "logs"))
+    rl = run_log.RunLog(app_version="9.9.9")
+    rl.header("/out/footage embedded markers", dest_volume="/Volumes/X", dest_free=1234567)
+    rl.inputs([])
+    rl.result("✓ A.MP4 — 2 mark(s)")
+    rl.summary("1/1 embedded")
+    path = rl.write()
+
+    text = Path(path).read_text(encoding="utf-8")
+    assert "app: 9.9.9" in text
+    assert "1/1 embedded" in text
+    assert "✓ A.MP4" in text
+    assert "free: 1.2 MB" in text
+    assert run_log.latest_log() == path

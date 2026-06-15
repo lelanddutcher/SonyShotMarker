@@ -20,6 +20,7 @@ import os, sys, json, argparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import sony_shotmark as S
+import run_log
 
 OUT_FOLDER_NAME = "footage embedded markers"
 
@@ -76,20 +77,24 @@ def main(argv=None):
 
     # Free-space preflight — block a doomed run before copying anything. (CoW shared-volume
     # cloning is a Mac-app-only optimization; Python's copy is a real byte copy.)
-    if not args.force:
-        ok, required, free = S.enough_output_space(args.files, dest_dir)
-        if not ok:
-            msg = (f"Not enough space: embedding can need up to ~{_human(required)} on "
-                   f"{args.out}, but only {_human(free)} is free. Free up space, choose a "
-                   f"different output, or re-run with --force.")
-            if args.progress:
-                print(f"@@SPACE {required} {free}", flush=True)
-            if args.json:
-                print(json.dumps({"error": "insufficient-space", "required": required,
-                                  "free": free, "dest": dest_dir}))
-            else:
-                print("✗ " + msg)
-            return 2
+    space_ok, required, free = S.enough_output_space(args.files, dest_dir)
+    if not args.force and not space_ok:
+        msg = (f"Not enough space: embedding can need up to ~{_human(required)} on "
+               f"{args.out}, but only {_human(free)} is free. Free up space, choose a "
+               f"different output, or re-run with --force.")
+        if args.progress:
+            print(f"@@SPACE {required} {free}", flush=True)
+        if args.json:
+            print(json.dumps({"error": "insufficient-space", "required": required,
+                              "free": free, "dest": dest_dir}))
+        else:
+            print("✗ " + msg)
+        return 2
+
+    rl = run_log.RunLog()
+    rl.header(dest_dir, dest_volume=args.out, dest_free=free)
+    rl.inputs(args.files)
+
     N = len(args.files)
     results = []
     for i, src in enumerate(args.files):
@@ -97,18 +102,23 @@ def main(argv=None):
             print(f"@@P {i} {N} work {os.path.basename(src)}", flush=True)
         rec, msg = process_one(src, dest_dir)
         results.append(rec)
+        rl.result(msg)
         if not args.json:
             print("  " + msg, flush=True)
         if args.progress:
             print(f"@@P {i+1} {N} {rec['state']} {rec['file']}", flush=True)
 
     n_ok = sum(1 for r in results if r["status"] == "embedded")
+    rl.summary(f"{n_ok}/{N} embedded")
+    log_path = rl.write()
     if args.progress:
         print(f"@@P {N} {N} done {n_ok}", flush=True)
+        print(f"@@LOG {log_path}", flush=True)
     if args.json:
-        print(json.dumps({"dest": dest_dir, "embedded": n_ok, "total": N, "results": results}))
+        print(json.dumps({"dest": dest_dir, "embedded": n_ok, "total": N,
+                          "log": log_path, "results": results}))
     elif not args.progress:
-        print(f"\n✓ {n_ok}/{N} embedded → {dest_dir}\n")
+        print(f"\n✓ {n_ok}/{N} embedded → {dest_dir}\n  log: {log_path}\n")
     else:
         print(f"@@DONE {n_ok}/{N} embedded → {dest_dir}", flush=True)
     return 0 if n_ok else 1
