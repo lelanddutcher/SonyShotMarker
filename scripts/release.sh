@@ -14,11 +14,13 @@
 #         --apple-id "dutcher.leland@gmail.com" --team-id PKUE74YS72
 #
 # ── Then, to release ──
-#   scripts/release.sh v0.1.0
+#   scripts/release.sh v0.2.0
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
-TAG="${1:-v0.1.0}"
+# Require the version tag explicitly — defaulting it risks shipping a stale version whose
+# Sparkle appcast item would read as OLDER than what users already have (a broken update).
+TAG="${1:?usage: scripts/release.sh vX.Y.Z  (pass the version tag explicitly, e.g. v0.2.0)}"
 IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 PROFILE="${NOTARY_PROFILE:-ShotMark-Notary}"
 APP="app/dist/Shot Mark Embedder.app"
