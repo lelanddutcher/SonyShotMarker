@@ -29,6 +29,10 @@ struct EmbedMarkersApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Shot Mark Embedder") { showAboutPanel() }
             }
+            CommandGroup(after: .appInfo) {
+                Button("Report a Problem…") { RunLog.reportProblem() }
+                Button("Open Logs Folder") { NSWorkspace.shared.activateFileViewerSelecting([RunLog.dir]) }
+            }
         }
     }
 }
@@ -62,18 +66,32 @@ private func showAboutPanel() {
 enum EmbedCLI {
     static func run(_ args: [String]) {
         guard let outArg = args.first else { print("usage: --embed-cli <outdir> <files...>"); return }
-        let folder = URL(fileURLWithPath: outArg).appendingPathComponent("footage embedded markers")
+        let out = URL(fileURLWithPath: outArg)
+        let folder = out.appendingPathComponent("footage embedded markers")
         let files = args.dropFirst().map { URL(fileURLWithPath: $0) }
+        let space = Embedder.enoughSpace(src: files, dest: out)
+        var log = RunLog.header(output: out, freeBytes: space.free, sameVolume: space.sameVolume)
+        log.append("inputs (\(files.count)):")
+        for f in files {
+            let sz = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            log.append("  \(f.lastPathComponent)  \(RunLog.human(Int64(sz)))")
+        }
+        log.append("results:")
         var ok = 0
         for f in files {
+            let line: String
             switch Embedder.embed(src: f, intoFolder: folder) {
-            case .embedded(let n, let d): ok += 1; print("✓ \(f.lastPathComponent): \(n) mark(s) → \(d.path)")
-            case .skippedNoMarks:         print("– \(f.lastPathComponent): no Shot Marks")
-            case .notSony:                print("– \(f.lastPathComponent): not Sony")
-            case .failed(let e):          print("✗ \(f.lastPathComponent): \(e)")
+            case .embedded(let n, let d): ok += 1; line = "✓ \(f.lastPathComponent): \(n) mark(s) → \(d.path)"
+            case .skippedNoMarks:         line = "– \(f.lastPathComponent): no Shot Marks"
+            case .notSony:                line = "– \(f.lastPathComponent): not Sony"
+            case .failed(let e):          line = "✗ \(f.lastPathComponent): \(e)"
             }
+            print(line); log.append("  " + line)
         }
+        log.append("summary: \(ok)/\(files.count) embedded")
+        let logURL = RunLog.write(lines: log)
         print("\(ok)/\(files.count) embedded → \(folder.path)")
+        if let logURL { print("log: \(logURL.path)") }
     }
 }
 
@@ -232,6 +250,13 @@ struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let total = queue.count
             var done = 0, embedded = 0
+            var log = RunLog.header(output: out, freeBytes: space.free, sameVolume: space.sameVolume)
+            log.append("inputs (\(total)):")
+            for f in queue {
+                let sz = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                log.append("  \(f.lastPathComponent)  \(RunLog.human(Int64(sz)))")
+            }
+            log.append("results:")
             for f in queue {
                 DispatchQueue.main.async { statusLine = "Embedding \(f.lastPathComponent)…  (\(done + 1)/\(total))" }
                 let res = Embedder.embed(src: f, intoFolder: folder)
@@ -244,8 +269,11 @@ struct ContentView: View {
                 case .notSony:            line = "– \(f.lastPathComponent): not Sony  (\(done)/\(total))"
                 case .failed(let e):      line = "✗ \(f.lastPathComponent): \(e)  (\(done)/\(total))"
                 }
+                log.append("  " + line)
                 DispatchQueue.main.async { progress = frac; statusLine = line }
             }
+            log.append("summary: \(embedded)/\(total) embedded")
+            RunLog.write(lines: log)
             DispatchQueue.main.async {
                 progress = 1; running = false
                 statusLine = "Done — \(embedded)/\(total) embedded into “footage embedded markers”."
