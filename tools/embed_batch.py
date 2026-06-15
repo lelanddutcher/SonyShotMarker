@@ -25,12 +25,18 @@ import run_log
 OUT_FOLDER_NAME = "footage embedded markers"
 
 
-def process_one(src, dest_dir):
-    """Embed one clip into dest_dir. Returns (rec, human_message)."""
+def process_one(src, dest_dir, verify=True):
+    """Embed one clip into dest_dir. Returns (rec, human_message).
+
+    Every clip ends in an explicit, non-silent outcome (embedded / skipped-with-reason /
+    failed-with-reason). When verify=True, the freshly written copy is re-opened and its
+    markers are confirmed before it is marked ✓ — a copy that fails verification is deleted
+    so the output folder never holds a bad file that looks finished.
+    """
     name = os.path.basename(src)
-    rec = {"file": name, "status": "", "state": "skip", "marks": 0, "output": ""}
+    rec = {"file": name, "status": "", "state": "skip", "marks": 0, "output": "", "verified": False}
     if not os.path.isfile(src):
-        rec.update(status="missing"); return rec, f"✗ {name}: not found"
+        rec.update(status="missing", state="err"); return rec, f"✗ {name}: not found"
     try:
         clip = S.parse_clip(src)
     except SystemExit:
@@ -47,10 +53,37 @@ def process_one(src, dest_dir):
     out = os.path.join(dest_dir, name)
     try:
         S.embed_xmp_into_mp4(clip, src, out)   # copies src->out, embeds; never touches src
-        rec.update(status="embedded", state="ok", marks=len(user), output=out)
-        return rec, f"✓ {name}: {len(user)} Shot Mark(s) embedded"
     except SystemExit as e:
-        rec.update(status=f"embed-failed", state="err"); return rec, f"✗ {name}: {e}"
+        rec.update(status="embed-failed", state="err"); return rec, f"✗ {name}: {e}"
+    except OSError as e:                        # e.g. drive ejected / I/O error mid-copy
+        rec.update(status="io-error", state="err"); return rec, f"✗ {name}: {e}"
+
+    if verify:
+        ok, detail = S.verify_embedded(out, expected_marks=len(user))
+        if not ok:
+            try:
+                os.unlink(out)                 # never leave a copy that fails verification
+            except OSError:
+                pass
+            rec.update(status="verify-failed", state="err")
+            return rec, f"✗ {name}: embedded but failed verify ({detail})"
+        rec["verified"] = True
+
+    rec.update(status="embedded", state="ok", marks=len(user), output=out)
+    return rec, f"✓ {name}: {len(user)} Shot Mark(s) embedded" + (", verified" if verify else "")
+
+
+def summarize(results) -> str:
+    """One-line, never-silent run summary: '✓410 · –2 · ✗1'."""
+    ok = sum(1 for r in results if r["status"] == "embedded")
+    skipped = sum(1 for r in results if r["status"] in ("no-marks", "not-sony", "unsupported"))
+    failed = sum(1 for r in results if r.get("state") == "err")
+    parts = [f"✓{ok}"]
+    if skipped:
+        parts.append(f"–{skipped}")
+    if failed:
+        parts.append(f"✗{failed}")
+    return " · ".join(parts)
 
 
 def _human(n):
@@ -73,23 +106,40 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     dest_dir = os.path.join(args.out, OUT_FOLDER_NAME)
-    os.makedirs(dest_dir, exist_ok=True)
-
-    # Free-space preflight — block a doomed run before copying anything. (CoW shared-volume
-    # cloning is a Mac-app-only optimization; Python's copy is a real byte copy.)
-    space_ok, required, free = S.enough_output_space(args.files, dest_dir)
-    if not args.force and not space_ok:
-        msg = (f"Not enough space: embedding can need up to ~{_human(required)} on "
-               f"{args.out}, but only {_human(free)} is free. Free up space, choose a "
-               f"different output, or re-run with --force.")
-        if args.progress:
-            print(f"@@SPACE {required} {free}", flush=True)
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError as e:
         if args.json:
-            print(json.dumps({"error": "insufficient-space", "required": required,
-                              "free": free, "dest": dest_dir}))
+            print(json.dumps({"error": "preflight", "problems": [f"cannot create output: {e}"]}))
         else:
-            print("✗ " + msg)
+            print(f"✗ Can't start — cannot create output folder: {e}")
         return 2
+
+    # Preflight gate — verify EVERYTHING before copying a single byte: sources readable,
+    # output writable + not the original, and enough free space. (CoW shared-volume cloning
+    # is a Mac-app-only optimization; Python's copy is a real byte copy.)
+    space_ok, required, free = S.enough_output_space(args.files, dest_dir)
+    problems = S.preflight(args.files, dest_dir)
+    if problems and not args.force:
+        if args.progress:
+            if not space_ok:
+                print(f"@@SPACE {required} {free}", flush=True)
+            print(f"@@PREFLIGHT {len(problems)}", flush=True)
+        if args.json:
+            print(json.dumps({"error": "preflight", "problems": problems,
+                              "required": required, "free": free, "dest": dest_dir}))
+        else:
+            print("✗ Can't start — preflight failed:")
+            for p in problems:
+                print(f"    • {p}")
+            print("  Fix these, choose a different output, or re-run with --force.")
+        return 2
+
+    # Overwrite note — copies from a previous run that will be replaced.
+    clobbered = S.existing_outputs(args.files, dest_dir)
+    if clobbered and not args.json:
+        shown = ", ".join(clobbered[:4]) + (f" +{len(clobbered) - 4}" if len(clobbered) > 4 else "")
+        print(f"  note: overwriting {len(clobbered)} existing cop{'y' if len(clobbered) == 1 else 'ies'}: {shown}")
 
     rl = run_log.RunLog()
     rl.header(dest_dir, dest_volume=args.out, dest_free=free)
@@ -109,16 +159,18 @@ def main(argv=None):
             print(f"@@P {i+1} {N} {rec['state']} {rec['file']}", flush=True)
 
     n_ok = sum(1 for r in results if r["status"] == "embedded")
-    rl.summary(f"{n_ok}/{N} embedded")
+    tally = summarize(results)
+    rl.summary(f"{n_ok}/{N} embedded   [{tally}]")
     log_path = rl.write()
     if args.progress:
         print(f"@@P {N} {N} done {n_ok}", flush=True)
+        print(f"@@SUMMARY {tally}", flush=True)
         print(f"@@LOG {log_path}", flush=True)
     if args.json:
         print(json.dumps({"dest": dest_dir, "embedded": n_ok, "total": N,
-                          "log": log_path, "results": results}))
+                          "summary": tally, "log": log_path, "results": results}))
     elif not args.progress:
-        print(f"\n✓ {n_ok}/{N} embedded → {dest_dir}\n  log: {log_path}\n")
+        print(f"\n{tally}   →   {dest_dir}\n  log: {log_path}\n")
     else:
         print(f"@@DONE {n_ok}/{N} embedded → {dest_dir}", flush=True)
     return 0 if n_ok else 1

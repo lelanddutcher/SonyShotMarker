@@ -483,6 +483,109 @@ def enough_output_space(files, dest_dir: str, margin: float = 0.02):
     return free >= required, required, free
 
 
+def _human_bytes(n) -> str:
+    if n is None or n < 0:
+        return "unknown"
+    f, units = float(n), ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024; i += 1
+    return f"{f:.1f} {units[i]}"
+
+
+def _nearest_existing(path: str) -> str:
+    """Walk up from path to the first directory that exists (for writability/space probes)."""
+    probe = os.path.abspath(path)
+    while probe and not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return probe
+
+
+def preflight(files, dest_dir: str, margin: float = 0.02) -> list[str]:
+    """Check everything that must hold BEFORE we touch a single byte. Returns a list of
+    human-readable problems; an empty list means it is safe to start. Covers: every source
+    exists + is readable, the output location is writable, the output can never collide with
+    an original, and there is enough free space."""
+    problems: list[str] = []
+
+    for f in files:
+        if not os.path.isfile(f):
+            problems.append(f"missing source: {os.path.basename(f)}")
+        elif not os.access(f, os.R_OK):
+            problems.append(f"unreadable source: {os.path.basename(f)}")
+
+    probe = _nearest_existing(dest_dir)
+    if not probe or not os.path.isdir(probe):
+        problems.append(f"output folder does not exist: {dest_dir}")
+    elif not os.access(probe, os.W_OK):
+        problems.append(f"output is read-only: {probe}")
+
+    dest_abs = os.path.abspath(dest_dir)
+    for f in files:
+        if os.path.abspath(f) == os.path.join(dest_abs, os.path.basename(f)):
+            problems.append(f"output would overwrite the original: {os.path.basename(f)}")
+
+    ok, required, free = enough_output_space(files, probe or dest_dir, margin)
+    if not ok:
+        problems.append(
+            f"not enough space: need ~{_human_bytes(required)}, only {_human_bytes(free)} free"
+        )
+    return problems
+
+
+def existing_outputs(files, dest_dir: str) -> list[str]:
+    """Basenames in `files` that already exist in dest_dir and would be overwritten — so a
+    GUI can warn (overwrite / skip / cancel) before clobbering a previous run's copies."""
+    out = []
+    for f in files:
+        if os.path.exists(os.path.join(dest_dir, os.path.basename(f))):
+            out.append(os.path.basename(f))
+    return out
+
+
+def verify_embedded(path: str, expected_marks: Optional[int] = None):
+    """Re-open an embedded copy and confirm the Adobe XMP markers are actually there,
+    parseable, and positioned BEFORE mdat (the only place Premiere reads them). Returns
+    (ok: bool, detail: str). This is the post-embed integrity gate that lets the app honor
+    its "verify before you delete the originals" promise — we only mark a file ✓ once its
+    copy reads back correctly."""
+    try:
+        raw = open(path, "rb").read()
+    except OSError as e:
+        return False, f"cannot reopen output: {e}"
+
+    boxes = list(_top_level_boxes(raw))
+    mdat = [off for kind, off, _ in boxes if kind == b"mdat"]
+    if not mdat:
+        return False, "no mdat box in output (structure broken)"
+    mdat_offset = min(mdat)
+
+    xmp = None
+    for kind, off, size in boxes:
+        if off >= mdat_offset:
+            break
+        if kind == b"uuid" and size >= 24 and raw[off + 8:off + 24] == ADOBE_XMP_UUID:
+            xmp = raw[off + 24:off + size]
+    if xmp is None:
+        return False, "no Adobe XMP marker box before mdat"
+
+    count = xmp.count(b"xmpDM:startTime")
+    if count == 0:
+        return False, "XMP box present but holds no markers"
+    if expected_marks is not None and count != expected_marks:
+        return False, f"expected {expected_marks} marker(s), found {count}"
+
+    # Structural sanity: top-level boxes must tile the whole file with no gap/overrun.
+    walked = sum(size for _, _, size in boxes)
+    if walked != len(raw):
+        return False, "top-level box walk does not cover the whole file"
+
+    return True, f"{count} marker(s) verified"
+
+
 def write_fcpxml(clip: ClipMarks, out: str):
     """FCP7-style xmeml that Premiere imports, with clip markers (seconds-based)."""
     marks = [m for m in clip.marks if m.is_user_mark] or clip.marks

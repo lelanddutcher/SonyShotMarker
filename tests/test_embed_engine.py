@@ -17,6 +17,12 @@ run_log = importlib.util.module_from_spec(spec_rl)
 sys.modules[spec_rl.name] = run_log
 spec_rl.loader.exec_module(run_log)
 
+spec_eb = importlib.util.spec_from_file_location("embed_batch", TOOLS / "embed_batch.py")
+assert spec_eb is not None and spec_eb.loader is not None
+embed_batch = importlib.util.module_from_spec(spec_eb)
+sys.modules[spec_eb.name] = embed_batch
+spec_eb.loader.exec_module(embed_batch)
+
 ADOBE_UUID = bytes.fromhex("BE7ACFCB97A942E89C71999491E3AFAC")
 
 
@@ -168,6 +174,111 @@ def test_enough_output_space_ok_when_room(tmp_path, monkeypatch):
 
     ok, required, free = sony_shotmark.enough_output_space([str(clip)], str(tmp_path))
     assert ok is True
+
+
+def test_verify_embedded_passes_on_real_embed(tmp_path):
+    src = tmp_path / "C0005.MP4"
+    out = tmp_path / "out" / "C0005.MP4"
+    synthetic_clip(src)
+    clip = sony_shotmark.parse_clip(str(src))
+    sony_shotmark.embed_xmp_into_mp4(clip, str(src), str(out))
+
+    ok, detail = sony_shotmark.verify_embedded(str(out), expected_marks=2)
+    assert ok is True
+    assert "2 marker(s) verified" in detail
+
+
+def test_verify_embedded_fails_on_wrong_count(tmp_path):
+    src = tmp_path / "C0006.MP4"
+    out = tmp_path / "out" / "C0006.MP4"
+    synthetic_clip(src)
+    clip = sony_shotmark.parse_clip(str(src))
+    sony_shotmark.embed_xmp_into_mp4(clip, str(src), str(out))
+
+    ok, detail = sony_shotmark.verify_embedded(str(out), expected_marks=5)
+    assert ok is False
+    assert "expected 5" in detail
+
+
+def test_verify_embedded_fails_when_no_adobe_xmp(tmp_path):
+    # A raw (un-embedded) Sony clip has the Sony uuid but no Adobe XMP box.
+    src = tmp_path / "C0007.MP4"
+    synthetic_clip(src)
+    ok, detail = sony_shotmark.verify_embedded(str(src))
+    assert ok is False
+    assert "no Adobe XMP marker box" in detail
+
+
+def test_preflight_clean_when_ok(tmp_path):
+    src = tmp_path / "C0008.MP4"
+    synthetic_clip(src)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    assert sony_shotmark.preflight([str(src)], str(dest)) == []
+
+
+def test_preflight_flags_missing_source(tmp_path):
+    dest = tmp_path / "out"
+    dest.mkdir()
+    problems = sony_shotmark.preflight([str(tmp_path / "nope.MP4")], str(dest))
+    assert any("missing source" in p for p in problems)
+
+
+def test_preflight_flags_insufficient_space(tmp_path, monkeypatch):
+    import shutil, collections
+    src = tmp_path / "C0009.MP4"
+    src.write_bytes(b"x" * 5000)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10 ** 9, 0, 10))
+    problems = sony_shotmark.preflight([str(src)], str(dest))
+    assert any("not enough space" in p for p in problems)
+
+
+def test_existing_outputs_detects_clobber(tmp_path):
+    src = tmp_path / "C0010.MP4"
+    src.write_bytes(b"x" * 10)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    assert sony_shotmark.existing_outputs([str(src)], str(dest)) == []
+    (dest / "C0010.MP4").write_bytes(b"old")
+    assert sony_shotmark.existing_outputs([str(src)], str(dest)) == ["C0010.MP4"]
+
+
+def test_process_one_embeds_and_verifies(tmp_path):
+    src = tmp_path / "C0011.MP4"
+    synthetic_clip(src)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    rec, msg = embed_batch.process_one(str(src), str(dest))
+    assert rec["status"] == "embedded"
+    assert rec["verified"] is True
+    assert "verified" in msg
+    assert (dest / "C0011.MP4").exists()
+
+
+def test_process_one_verify_failure_removes_output(tmp_path, monkeypatch):
+    src = tmp_path / "C0012.MP4"
+    synthetic_clip(src)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    monkeypatch.setattr(embed_batch.S, "verify_embedded", lambda p, expected_marks=None: (False, "simulated"))
+    rec, msg = embed_batch.process_one(str(src), str(dest))
+    assert rec["status"] == "verify-failed"
+    assert rec["state"] == "err"
+    assert not (dest / "C0012.MP4").exists(), "a copy that fails verify must be deleted"
+    assert "failed verify" in msg
+
+
+def test_summarize_counts():
+    results = [
+        {"status": "embedded", "state": "ok"},
+        {"status": "embedded", "state": "ok"},
+        {"status": "no-marks", "state": "skip"},
+        {"status": "embed-failed", "state": "err"},
+    ]
+    assert embed_batch.summarize(results) == "✓2 · –1 · ✗1"
 
 
 def test_run_log_writes_records_and_finds_latest(tmp_path, monkeypatch):
