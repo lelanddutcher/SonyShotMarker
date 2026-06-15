@@ -25,13 +25,14 @@ import run_log
 OUT_FOLDER_NAME = "footage embedded markers"
 
 
-def process_one(src, dest_dir, verify=True):
+def process_one(src, dest_dir, verify=True, on_bytes=None, cancel=None):
     """Embed one clip into dest_dir. Returns (rec, human_message).
 
     Every clip ends in an explicit, non-silent outcome (embedded / skipped-with-reason /
-    failed-with-reason). When verify=True, the freshly written copy is re-opened and its
-    markers are confirmed before it is marked ✓ — a copy that fails verification is deleted
-    so the output folder never holds a bad file that looks finished.
+    failed-with-reason / cancelled). When verify=True, the freshly written copy is re-opened
+    and its markers are confirmed before it is marked ✓ — a copy that fails verification is
+    deleted so the output folder never holds a bad file that looks finished. `on_bytes(copied,
+    total)` reports copy progress; `cancel()` aborts mid-copy (no half-file is left behind).
     """
     name = os.path.basename(src)
     rec = {"file": name, "status": "", "state": "skip", "marks": 0, "output": "", "verified": False}
@@ -52,7 +53,9 @@ def process_one(src, dest_dir, verify=True):
 
     out = os.path.join(dest_dir, name)
     try:
-        S.embed_xmp_into_mp4(clip, src, out)   # copies src->out, embeds; never touches src
+        S.embed_xmp_into_mp4(clip, src, out, on_bytes=on_bytes, cancel=cancel)
+    except S.EmbedCancelled:
+        rec.update(status="cancelled", state="skip"); return rec, f"⏹ {name}: cancelled"
     except SystemExit as e:
         rec.update(status="embed-failed", state="err"); return rec, f"✗ {name}: {e}"
     except OSError as e:                        # e.g. drive ejected / I/O error mid-copy

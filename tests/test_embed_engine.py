@@ -281,6 +281,91 @@ def test_summarize_counts():
     assert embed_batch.summarize(results) == "✓2 · –1 · ✗1"
 
 
+NRT_BYTES = (
+    b'<NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20">'
+    b'<Device manufacturer="Sony" modelName="ILCE-7SM3"/>'
+    b'<VideoFrame captureFps="119.88" formatFps="119.88"/>'
+    b'<LtcChangeTable tcFps="30" halfStep="true"><LtcChange frameCount="0" value="00000001"/></LtcChangeTable>'
+    b'<Duration value="1200"/><KlvPacketTable>'
+    b'<KlvPacket key="060E2B34010101050301020A02000000" frameCount="120" lengthValue="0A5F53686F744D61726B31" status="spot"/>'
+    b'<KlvPacket key="060E2B34010101050301020A02000000" frameCount="240" lengthValue="0A5F53686F744D61726B32" status="spot"/>'
+    b'</KlvPacketTable></NonRealTimeMeta>'
+)
+
+
+def test_parse_when_nrt_after_mdat(tmp_path):
+    # Real Sony layout puts the metadata box AFTER mdat; the seek-based reader must find it
+    # without loading the (here, oversized) mdat payload.
+    src = tmp_path / "C0099.MP4"
+    src.write_bytes(b"".join([
+        box(b"ftyp", b"isom" + b"\0" * 12),
+        box(b"mdat", b"media payload bytes " * 1000),
+        box(b"uuid", b"\x01" * 16 + NRT_BYTES),
+    ]))
+    clip = sony_shotmark.parse_clip(str(src))
+    assert clip.user_mark_count == 2
+    assert [m.capture_frame for m in clip.marks if m.is_user_mark] == [120, 240]
+
+
+def test_copy_with_progress_reports_and_completes(tmp_path):
+    src = tmp_path / "in.bin"
+    dst = tmp_path / "out.bin"
+    src.write_bytes(b"abc" * 5000)
+    seen = []
+    ok = sony_shotmark.copy_with_progress(str(src), str(dst), on_bytes=lambda c, t: seen.append((c, t)), chunk=4096)
+    assert ok is True
+    assert dst.read_bytes() == src.read_bytes()
+    assert seen[0][0] == 0 and seen[-1][0] == seen[-1][1] == src.stat().st_size
+    assert [c for c, _ in seen] == sorted(c for c, _ in seen)  # monotonic
+
+
+def test_copy_with_progress_cancels(tmp_path):
+    src = tmp_path / "in.bin"
+    dst = tmp_path / "out.bin"
+    src.write_bytes(b"x" * 100000)
+    ok = sony_shotmark.copy_with_progress(str(src), str(dst), cancel=lambda: True)
+    assert ok is False  # aborted before copying anything
+
+
+def test_embed_reports_byte_progress(tmp_path):
+    src = tmp_path / "C0020.MP4"
+    out = tmp_path / "out" / "C0020.MP4"
+    synthetic_clip(src)
+    clip = sony_shotmark.parse_clip(str(src))
+    seen = []
+    sony_shotmark.embed_xmp_into_mp4(clip, str(src), str(out), on_bytes=lambda c, t: seen.append((c, t)))
+    assert out.exists()
+    assert seen[-1][0] == seen[-1][1] == src.stat().st_size
+
+
+def test_embed_cancel_midcopy_leaves_no_output(tmp_path):
+    src = tmp_path / "C0021.MP4"
+    out = tmp_path / "out" / "C0021.MP4"
+    synthetic_clip(src)
+    before = src.read_bytes()
+    clip = sony_shotmark.parse_clip(str(src))
+    try:
+        sony_shotmark.embed_xmp_into_mp4(clip, str(src), str(out), cancel=lambda: True)
+    except sony_shotmark.EmbedCancelled:
+        pass
+    else:
+        raise AssertionError("expected EmbedCancelled")
+    assert src.read_bytes() == before
+    assert not out.exists()
+    assert not (out.parent / (out.name + ".partial")).exists()
+
+
+def test_process_one_cancel_returns_cancelled(tmp_path):
+    src = tmp_path / "C0022.MP4"
+    synthetic_clip(src)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    rec, msg = embed_batch.process_one(str(src), str(dest), cancel=lambda: True)
+    assert rec["status"] == "cancelled"
+    assert "cancelled" in msg
+    assert not (dest / "C0022.MP4").exists()
+
+
 def test_run_log_writes_records_and_finds_latest(tmp_path, monkeypatch):
     monkeypatch.setenv("SHOTMARK_LOG_DIR", str(tmp_path / "logs"))
     rl = run_log.RunLog(app_version="9.9.9")

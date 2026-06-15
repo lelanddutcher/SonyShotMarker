@@ -189,21 +189,49 @@ class ClipMarks:
 # --------------------------------------------------------------------------- #
 # Extraction
 # --------------------------------------------------------------------------- #
-def read_nrt_xml(path: str) -> str:
-    """Return the NonRealTimeMeta XML text from an .xml sidecar or an .mp4/.mxf."""
-    raw = open(path, "rb").read()
-    start = raw.find(b"<NonRealTimeMeta")
+def _extract_nrt(buf: bytes) -> Optional[str]:
+    """Pull the <NonRealTimeMeta>…</NonRealTimeMeta> doc out of a byte buffer, if present."""
+    start = buf.find(b"<NonRealTimeMeta")
     if start == -1:
-        # maybe a sidecar that begins straight with <?xml
-        start = raw.find(b"<?xml")
-    end = raw.find(b"</NonRealTimeMeta>")
-    if start == -1 or end == -1:
-        raise SystemExit(f"No NonRealTimeMeta document found in {path}")
-    # back up to the <?xml declaration if present just before the root
-    decl = raw.rfind(b"<?xml", 0, start + 1)
+        return None
+    end = buf.find(b"</NonRealTimeMeta>", start)
+    if end == -1:
+        return None
+    decl = buf.rfind(b"<?xml", 0, start + 1)   # back up to the <?xml decl if it's right before
     if decl != -1 and start - decl < 80:
         start = decl
-    return raw[start:end + len(b"</NonRealTimeMeta>")].decode("utf-8", "replace")
+    return buf[start:end + len(b"</NonRealTimeMeta>")].decode("utf-8", "replace")
+
+
+def read_nrt_xml(path: str) -> str:
+    """Return the NonRealTimeMeta XML from an .mp4/.mov or a sidecar .xml WITHOUT loading the
+    whole file: walk the top-level boxes by seeking headers and read only the small non-`mdat`
+    boxes (the Sony metadata lives in one of them). This keeps a multi-GB clip from being
+    slurped into memory just to find a few KB of marks. Mirrors handoff/swift's locate logic."""
+    try:
+        with open(path, "rb") as fh:
+            for kind, offset, size in _walk_top_boxes_streaming(fh):
+                if kind == b"mdat":
+                    continue                       # seek past — never read the media payload
+                fh.seek(offset)
+                buf = fh.read(min(size, 16 * 1024 * 1024))
+                doc = _extract_nrt(buf)
+                if doc is None and size > len(buf):  # NRT might straddle the cap; read it fully
+                    fh.seek(offset)
+                    doc = _extract_nrt(fh.read(size))
+                if doc is not None:
+                    return doc
+    except OSError:
+        pass
+    # Sidecar .xml (no box structure) or a small odd file — safe to read directly when small.
+    try:
+        if os.path.getsize(path) <= 64 * 1024 * 1024:
+            doc = _extract_nrt(open(path, "rb").read())
+            if doc is not None:
+                return doc
+    except OSError:
+        pass
+    raise SystemExit(f"No NonRealTimeMeta document found in {path}")
 
 
 def decode_klv_label(length_value_hex: str) -> str:
@@ -378,6 +406,66 @@ def _top_level_boxes(raw: bytes):
         pos += size
 
 
+class EmbedCancelled(Exception):
+    """Raised when a copy is aborted mid-stream via the cancel predicate."""
+
+
+def _walk_top_boxes_streaming(fh):
+    """Yield (kind: bytes, offset: int, size: int) for top-level MP4 boxes by reading only the
+    8/16-byte headers and seeking past payloads — so a multi-GB `mdat` is skipped, never loaded.
+    The file-handle counterpart of _top_level_boxes()."""
+    fh.seek(0, 2)
+    n = fh.tell()
+    pos = 0
+    while pos + 8 <= n:
+        fh.seek(pos)
+        hdr = fh.read(8)
+        if len(hdr) < 8:
+            break
+        size = int.from_bytes(hdr[0:4], "big")
+        kind = hdr[4:8]
+        if size == 1:
+            ext = fh.read(8)
+            if len(ext) < 8:
+                break
+            size = int.from_bytes(ext, "big")
+        elif size == 0:
+            size = n - pos
+        if size < 8 or pos + size > n:
+            break
+        yield kind, pos, size
+        pos += size
+
+
+def copy_with_progress(src, dst, on_bytes=None, cancel=None, chunk: int = 4 * 1024 * 1024) -> bool:
+    """Stream-copy src→dst in chunks, calling on_bytes(copied, total) per chunk and checking
+    cancel() between chunks. Returns True if finished, False if cancelled (the caller cleans up
+    the partial dst). A real byte copy — no copy-on-write; the macOS app clones same-volume."""
+    total = os.path.getsize(src)
+    copied = 0
+    with open(src, "rb") as r, open(dst, "wb") as w:
+        if on_bytes:
+            on_bytes(0, total)
+        while True:
+            if cancel is not None and cancel():
+                return False
+            buf = r.read(chunk)
+            if not buf:
+                break
+            w.write(buf)
+            copied += len(buf)
+            if on_bytes:
+                on_bytes(copied, total)
+        w.flush()
+        os.fsync(w.fileno())
+    try:                                    # preserve mtime like shutil.copy2 did
+        st = os.stat(src)
+        os.utime(dst, (st.st_atime, st.st_mtime))
+    except OSError:
+        pass
+    return True
+
+
 def _xmp_uuid_box(packet: bytes) -> bytes:
     payload = ADOBE_XMP_UUID + packet
     size = len(payload) + 8
@@ -386,26 +474,22 @@ def _xmp_uuid_box(packet: bytes) -> bytes:
     return size.to_bytes(4, "big") + b"uuid" + payload
 
 
-def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool = False):
+def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool = False,
+                       on_bytes=None, cancel=None):
     """
     Embed xmpDM markers INTO a copy of an MP4/MOV/M4V without external tools.
 
-    The Mac app's validated strategy is intentionally mirrored here for Windows:
-    copy the source, find reusable top-level `free`/`skip` space before `mdat`, write
-    a standard Adobe XMP `uuid` box into that space, then leave the media payload and
-    chunk offsets untouched. Originals are never modified and there is no exiftool
-    dependency for Windows users.
-    """
-    import shutil
+    The Mac app's validated strategy is intentionally mirrored here for Windows: find reusable
+    top-level `free`/`skip` space before `mdat`, stream-copy the source, write a standard Adobe
+    XMP `uuid` box into that space, and leave the media payload + chunk offsets untouched.
+    Originals are never modified; no exiftool dependency.
 
+    Parsing is seek-based (headers only) and the copy is chunked, so a multi-GB clip is never
+    loaded into memory. `on_bytes(copied, total)` reports copy progress; `cancel()` (a predicate)
+    aborts mid-copy and raises EmbedCancelled after cleaning up the partial.
+    """
     if os.path.abspath(src) == os.path.abspath(out):
         raise SystemExit("refusing to embed into the original; choose a different output path")
-    raw = open(src, "rb").read()
-    boxes = list(_top_level_boxes(raw))
-    mdat_offsets = [offset for kind, offset, _size in boxes if kind == b"mdat"]
-    if not mdat_offsets:
-        raise SystemExit("no mdat box found; not a writable MP4/MOV")
-    mdat_offset = min(mdat_offsets)
 
     core = build_xmp(clip, include_auto).split("?>", 1)[1].strip()
     packet = ('<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
@@ -413,16 +497,23 @@ def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool =
     uuid_box = _xmp_uuid_box(packet)
     needed = len(uuid_box) + 8  # leave a valid trailing free box header
 
+    # Parse only the boxes BEFORE mdat by seeking headers — never read the media payload.
     reusable = None
     neutralize_offsets = []
-    for kind, offset, size in boxes:
-        if offset >= mdat_offset:
-            continue
-        if kind in (b"free", b"skip") and size >= needed and reusable is None:
-            reusable = (offset, size)
-        if kind == b"uuid" and size >= 24 and raw[offset + 8:offset + 24] == ADOBE_XMP_UUID:
-            neutralize_offsets.append(offset)
-
+    with open(src, "rb") as fh:
+        mdat_offset = None
+        for kind, offset, size in _walk_top_boxes_streaming(fh):
+            if kind == b"mdat":
+                mdat_offset = offset
+                break
+            if kind in (b"free", b"skip") and size >= needed and reusable is None:
+                reusable = (offset, size)
+            if kind == b"uuid" and size >= 24:
+                fh.seek(offset + 8)
+                if fh.read(16) == ADOBE_XMP_UUID:
+                    neutralize_offsets.append(offset)
+    if mdat_offset is None:
+        raise SystemExit("no mdat box found; not a writable MP4/MOV")
     if reusable is None:
         raise SystemExit(f"no reusable free space before mdat (need {needed} bytes)")
 
@@ -434,7 +525,8 @@ def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool =
     # leaves a half-written file masquerading as a finished embed at `out`.
     partial = out + ".partial"
     try:
-        shutil.copy2(src, partial)
+        if not copy_with_progress(src, partial, on_bytes=on_bytes, cancel=cancel):
+            raise EmbedCancelled()
         with open(partial, "r+b") as fh:
             # Neutralize previous Adobe XMP boxes so Premiere sees this run's markers first.
             for offset in neutralize_offsets:
@@ -553,22 +645,26 @@ def verify_embedded(path: str, expected_marks: Optional[int] = None):
     its "verify before you delete the originals" promise — we only mark a file ✓ once its
     copy reads back correctly."""
     try:
-        raw = open(path, "rb").read()
+        with open(path, "rb") as fh:
+            mdat_offset = None
+            xmp = None
+            last_end = 0
+            for kind, offset, size in _walk_top_boxes_streaming(fh):
+                last_end = offset + size
+                if kind == b"mdat" and mdat_offset is None:
+                    mdat_offset = offset
+                if kind == b"uuid" and size >= 24 and mdat_offset is None:  # must be before mdat
+                    fh.seek(offset + 8)
+                    if fh.read(16) == ADOBE_XMP_UUID:
+                        fh.seek(offset + 24)
+                        xmp = fh.read(size - 24)
+            fh.seek(0, 2)
+            total = fh.tell()
     except OSError as e:
         return False, f"cannot reopen output: {e}"
 
-    boxes = list(_top_level_boxes(raw))
-    mdat = [off for kind, off, _ in boxes if kind == b"mdat"]
-    if not mdat:
+    if mdat_offset is None:
         return False, "no mdat box in output (structure broken)"
-    mdat_offset = min(mdat)
-
-    xmp = None
-    for kind, off, size in boxes:
-        if off >= mdat_offset:
-            break
-        if kind == b"uuid" and size >= 24 and raw[off + 8:off + 24] == ADOBE_XMP_UUID:
-            xmp = raw[off + 24:off + size]
     if xmp is None:
         return False, "no Adobe XMP marker box before mdat"
 
@@ -579,8 +675,7 @@ def verify_embedded(path: str, expected_marks: Optional[int] = None):
         return False, f"expected {expected_marks} marker(s), found {count}"
 
     # Structural sanity: top-level boxes must tile the whole file with no gap/overrun.
-    walked = sum(size for _, _, size in boxes)
-    if walked != len(raw):
+    if last_end != total:
         return False, "top-level box walk does not cover the whole file"
 
     return True, f"{count} marker(s) verified"
