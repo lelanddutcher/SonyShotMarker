@@ -52,16 +52,44 @@ def process_one(src, dest_dir):
         rec.update(status=f"embed-failed", state="err"); return rec, f"✗ {name}: {e}"
 
 
+def _human(n):
+    if n is None or n < 0:
+        return "unknown"
+    f, units = float(n), ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024; i += 1
+    return f"{f:.1f} {units[i]}"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Embed Sony Shot Marks into copies in an output folder")
     ap.add_argument("--out", required=True)
     ap.add_argument("--progress", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--force", action="store_true", help="skip the free-space preflight")
     ap.add_argument("files", nargs="+")
     args = ap.parse_args(argv)
 
     dest_dir = os.path.join(args.out, OUT_FOLDER_NAME)
     os.makedirs(dest_dir, exist_ok=True)
+
+    # Free-space preflight — block a doomed run before copying anything. (CoW shared-volume
+    # cloning is a Mac-app-only optimization; Python's copy is a real byte copy.)
+    if not args.force:
+        ok, required, free = S.enough_output_space(args.files, dest_dir)
+        if not ok:
+            msg = (f"Not enough space: embedding can need up to ~{_human(required)} on "
+                   f"{args.out}, but only {_human(free)} is free. Free up space, choose a "
+                   f"different output, or re-run with --force.")
+            if args.progress:
+                print(f"@@SPACE {required} {free}", flush=True)
+            if args.json:
+                print(json.dumps({"error": "insufficient-space", "required": required,
+                                  "free": free, "dest": dest_dir}))
+            else:
+                print("✗ " + msg)
+            return 2
     N = len(args.files)
     results = []
     for i, src in enumerate(args.files):

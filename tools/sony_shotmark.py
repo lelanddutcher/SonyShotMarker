@@ -427,11 +427,15 @@ def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool =
         raise SystemExit(f"no reusable free space before mdat (need {needed} bytes)")
 
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    shutil.copy2(src, out)
     free_offset, free_size = reusable
     trailing_free_size = free_size - len(uuid_box)
+    # Atomic write: assemble the embedded copy under a `.partial` name and rename it into
+    # place only once it is fully written + flushed. A failure, disk-full, or cancel never
+    # leaves a half-written file masquerading as a finished embed at `out`.
+    partial = out + ".partial"
     try:
-        with open(out, "r+b") as fh:
+        shutil.copy2(src, partial)
+        with open(partial, "r+b") as fh:
             # Neutralize previous Adobe XMP boxes so Premiere sees this run's markers first.
             for offset in neutralize_offsets:
                 fh.seek(offset + 4)
@@ -439,15 +443,44 @@ def embed_xmp_into_mp4(clip: ClipMarks, src: str, out: str, include_auto: bool =
             fh.seek(free_offset)
             fh.write(uuid_box)
             fh.write(trailing_free_size.to_bytes(4, "big") + b"free")
-    except Exception:
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(partial, out)   # atomic on the same filesystem
+    except BaseException:
         try:
-            os.unlink(out)
+            os.unlink(partial)     # never leave a stray partial (also covers cancel/interrupt)
         except OSError:
             pass
         raise
 
     n = packet.count(b"xmpDM:startTime")
     print(f"  -> EMBED {out}  ({n} clip markers embedded; Sony marks preserved)")
+
+
+def required_output_bytes(files, margin: float = 0.02) -> int:
+    """Worst-case bytes the embed writes to the output volume. Python's copy is a real
+    byte copy (no copy-on-write), so budget ~the full size of every input clip plus a
+    small margin. (The macOS app's Swift path can clone on the same volume and needs far
+    less — that CoW-aware check lives in the app.)"""
+    total = 0
+    for f in files:
+        try:
+            total += os.path.getsize(f)
+        except OSError:
+            pass
+    return int(total * (1.0 + margin))
+
+
+def enough_output_space(files, dest_dir: str, margin: float = 0.02):
+    """Return (ok, required_bytes, free_bytes). free is -1 when it can't be determined
+    (in which case we do not block)."""
+    import shutil
+    required = required_output_bytes(files, margin)
+    try:
+        free = shutil.disk_usage(dest_dir).free
+    except OSError:
+        return True, required, -1
+    return free >= required, required, free
 
 
 def write_fcpxml(clip: ClipMarks, out: str):

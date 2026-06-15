@@ -115,3 +115,50 @@ def test_embed_fails_cleanly_when_no_pre_mdat_free_space(tmp_path):
     else:
         raise AssertionError("expected SystemExit")
     assert not out.exists()
+
+
+def test_embed_atomic_cleans_partial_when_finalize_fails(tmp_path, monkeypatch):
+    src = tmp_path / "C0004.MP4"
+    out = tmp_path / "out" / "C0004.MP4"
+    synthetic_clip(src)
+    before = src.read_bytes()
+    clip = sony_shotmark.parse_clip(str(src))
+
+    def _boom(*a, **k):
+        raise OSError("simulated finalize failure")
+    monkeypatch.setattr(sony_shotmark.os, "replace", _boom)
+
+    try:
+        sony_shotmark.embed_xmp_into_mp4(clip, str(src), str(out))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("expected OSError")
+
+    assert src.read_bytes() == before, "original must never be touched"
+    assert not out.exists(), "no half-file may be left at the final path"
+    assert not (out.parent / (out.name + ".partial")).exists(), "the .partial must be cleaned up"
+
+
+def test_enough_output_space_blocks_when_short(tmp_path, monkeypatch):
+    import shutil, collections
+    clip = tmp_path / "big.MP4"
+    clip.write_bytes(b"x" * 5000)
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10 ** 9, 0, 1000))
+
+    ok, required, free = sony_shotmark.enough_output_space([str(clip)], str(tmp_path))
+    assert ok is False
+    assert required >= 5000
+    assert free == 1000
+
+
+def test_enough_output_space_ok_when_room(tmp_path, monkeypatch):
+    import shutil, collections
+    clip = tmp_path / "big.MP4"
+    clip.write_bytes(b"x" * 5000)
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10 ** 9, 0, 10 ** 9))
+
+    ok, required, free = sony_shotmark.enough_output_space([str(clip)], str(tmp_path))
+    assert ok is True

@@ -228,10 +228,11 @@ enum Embedder {
         let fm = FileManager.default
         do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) } catch {}
         let dest = folder.appendingPathComponent(src.lastPathComponent)
+        let partial = folder.appendingPathComponent(src.lastPathComponent + ".partial")
         do {
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: src, to: dest)
-            let h = try FileHandle(forWritingTo: dest)
+            if fm.fileExists(atPath: partial.path) { try fm.removeItem(at: partial) }
+            try fm.copyItem(at: src, to: partial)   // CoW clone on the same volume; full copy cross-volume
+            let h = try FileHandle(forWritingTo: partial)
             // 1) neutralize prior Adobe XMP boxes (type 'uuid' -> 'free')
             for off in neutralize {
                 try h.seek(toOffset: UInt64(off + 4)); try h.write(contentsOf: Data("free".utf8))
@@ -244,10 +245,35 @@ enum Embedder {
             try h.seek(toOffset: UInt64(free.offset))
             try h.write(contentsOf: uuidBox)
             try h.write(contentsOf: newFree)
+            try h.synchronize()
             try h.close()
+            // atomic finalize: the embedded copy only appears at `dest` once fully written
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            try fm.moveItem(at: partial, to: dest)
             return .embedded(user.count, dest)
         } catch {
+            try? fm.removeItem(at: partial)   // never leave a stray half-file
             return .failed(error.localizedDescription)
         }
+    }
+
+    // MARK: free-space preflight (CoW-aware)
+    /// Same-volume copies are APFS clones (~free); cross-volume needs ~the full input size.
+    /// Returns whether the destination volume has room, plus the numbers for the UI.
+    static func enoughSpace(src: [URL], dest: URL) -> (ok: Bool, required: Int64, free: Int64, sameVolume: Bool) {
+        var srcVol: URL? = nil, destVol: URL? = nil, free: Int64 = -1
+        if let first = src.first, let rv = try? first.resourceValues(forKeys: [.volumeURLKey]) { srcVol = rv.volume }
+        if let rv = try? dest.resourceValues(forKeys: [.volumeURLKey]) { destVol = rv.volume }
+        if let rv = try? dest.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let cap = rv.volumeAvailableCapacityForImportantUsage { free = cap }
+        let same = srcVol != nil && srcVol == destVol
+        var total: Int64 = 0
+        for u in src {
+            if let rv = try? u.resourceValues(forKeys: [.fileSizeKey]), let s = rv.fileSize { total += Int64(s) }
+        }
+        // same-volume clone diverges only by our ~few-KB patch each → tiny; cross-volume = full size.
+        let required: Int64 = same ? Int64(128 * 1024 * 1024) : Int64(Double(total) * 1.02)
+        let ok = free < 0 || free >= required
+        return (ok, required, free, same)
     }
 }

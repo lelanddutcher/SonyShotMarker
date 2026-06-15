@@ -209,8 +209,23 @@ struct ContentView: View {
         if panel.runModal() == .OK { outputDir = panel.url }
     }
 
+    private func human(_ n: Int64) -> String {
+        n < 0 ? "an unknown amount" : ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
+    }
+
     private func run() {
         guard let out = outputDir else { return }
+        // Free-space preflight (CoW-aware): block a doomed run before copying anything.
+        let space = Embedder.enoughSpace(src: files, dest: out)
+        if !space.ok {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "Not enough space on the output drive"
+            a.informativeText = "Embedding these \(files.count) clip\(files.count == 1 ? "" : "s") can need up to about \(human(space.required)) on “\(out.lastPathComponent)”, but only \(human(space.free)) is free. Free up space or choose a different output."
+            a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Embed Anyway")
+            if a.runModal() == .alertFirstButtonReturn { return }   // Cancel
+        }
         let folder = out.appendingPathComponent("footage embedded markers")
         let queue = files
         running = true; progress = 0; statusLine = "Starting…"
