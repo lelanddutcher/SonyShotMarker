@@ -77,20 +77,29 @@ enum EmbedCLI {
             log.append("  \(f.lastPathComponent)  \(RunLog.human(Int64(sz)))")
         }
         log.append("results:")
-        var ok = 0
+        var ok = 0, skipped = 0, failed = 0
         for f in files {
+            var res = Embedder.embed(src: f, intoFolder: folder)
+            if case .embedded(let n, let d) = res {           // post-embed verify
+                let v = Embedder.verifyEmbedded(d, expected: n)
+                if !v.ok { try? FileManager.default.removeItem(at: d); res = .failed("failed verify (\(v.detail))") }
+            }
             let line: String
-            switch Embedder.embed(src: f, intoFolder: folder) {
-            case .embedded(let n, let d): ok += 1; line = "✓ \(f.lastPathComponent): \(n) mark(s) → \(d.path)"
-            case .skippedNoMarks:         line = "– \(f.lastPathComponent): no Shot Marks"
-            case .notSony:                line = "– \(f.lastPathComponent): not Sony"
-            case .failed(let e):          line = "✗ \(f.lastPathComponent): \(e)"
+            switch res {
+            case .embedded(let n, let d): ok += 1; line = "✓ \(f.lastPathComponent): \(n) mark(s), verified → \(d.path)"
+            case .skippedNoMarks:         skipped += 1; line = "– \(f.lastPathComponent): no Shot Marks"
+            case .notSony:                skipped += 1; line = "– \(f.lastPathComponent): not Sony"
+            case .failed(let e):          failed += 1; line = "✗ \(f.lastPathComponent): \(e)"
             }
             print(line); log.append("  " + line)
         }
-        log.append("summary: \(ok)/\(files.count) embedded")
+        var tallyParts = ["✓\(ok)"]
+        if skipped > 0 { tallyParts.append("–\(skipped)") }
+        if failed > 0 { tallyParts.append("✗\(failed)") }
+        let tally = tallyParts.joined(separator: " · ")
+        log.append("summary: \(ok)/\(files.count) embedded   [\(tally)]")
         let logURL = RunLog.write(lines: log)
-        print("\(ok)/\(files.count) embedded → \(folder.path)")
+        print("\(tally)  →  \(folder.path)")
         if let logURL { print("log: \(logURL.path)") }
     }
 }
@@ -102,6 +111,8 @@ struct ContentView: View {
     @State private var running = false
     @State private var progress: Double = 0
     @State private var statusLine = ""
+    @State private var cancelToken = CancelToken()
+    @State private var cancelRequested = false
 
     private let brandingPath = ProcessInfo.processInfo.environment["BRANDING_PNG"]
         ?? "/Users/LelandDutcher/Developer/SonyShotMarker/branding/cat sticking tongue out.png"
@@ -174,6 +185,19 @@ struct ContentView: View {
             HStack {
                 Spacer().frame(width: 150)
                 Spacer()
+                if running {
+                    Button {
+                        cancelRequested = true
+                        cancelToken.cancel()
+                        statusLine = "Cancelling…"
+                    } label: {
+                        Text("Cancel").font(.headline).padding(.horizontal, 18).padding(.vertical, 11)
+                    }
+                    .buttonStyle(.plain)
+                    .background(Color(white: 0.86)).foregroundStyle(ink).clipShape(Capsule())
+                    .disabled(cancelRequested)
+                    .padding(.trailing, 8)
+                }
                 Button { run() } label: {
                     Text(running ? "Embedding…" : "Embed Markers")
                         .font(.headline).padding(.horizontal, 22).padding(.vertical, 11)
@@ -233,23 +257,47 @@ struct ContentView: View {
 
     private func run() {
         guard let out = outputDir else { return }
-        // Free-space preflight (CoW-aware): block a doomed run before copying anything.
-        let space = Embedder.enoughSpace(src: files, dest: out)
-        if !space.ok {
+        let folder = out.appendingPathComponent("footage embedded markers")
+
+        // Preflight gate (CoW-aware): verify sources readable, output writable + not the
+        // original, and enough free space — before copying anything.
+        let problems = Embedder.preflightProblems(src: files, dest: folder)
+        if !problems.isEmpty {
             let a = NSAlert()
             a.alertStyle = .warning
-            a.messageText = "Not enough space on the output drive"
-            a.informativeText = "Embedding these \(files.count) clip\(files.count == 1 ? "" : "s") can need up to about \(human(space.required)) on “\(out.lastPathComponent)”, but only \(human(space.free)) is free. Free up space or choose a different output."
+            a.messageText = "Some checks failed before starting"
+            a.informativeText = problems.map { "•  \($0)" }.joined(separator: "\n")
+                + "\n\nFix these and try again, or embed anyway."
             a.addButton(withTitle: "Cancel")
             a.addButton(withTitle: "Embed Anyway")
             if a.runModal() == .alertFirstButtonReturn { return }   // Cancel
         }
-        let folder = out.appendingPathComponent("footage embedded markers")
+
+        // Overwrite warning: copies from a previous run that would be replaced.
+        let clobber = Embedder.existingOutputs(src: files, dest: folder)
+        if !clobber.isEmpty {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "Overwrite \(clobber.count) existing cop\(clobber.count == 1 ? "y" : "ies")?"
+            a.informativeText = "“\(folder.lastPathComponent)” already contains: "
+                + clobber.prefix(6).map(\.lastPathComponent).joined(separator: ", ")
+                + (clobber.count > 6 ? " +\(clobber.count - 6)" : "")
+                + ".\nEmbedding will replace them."
+            a.addButton(withTitle: "Cancel")
+            a.addButton(withTitle: "Overwrite")
+            if a.runModal() == .alertFirstButtonReturn { return }   // Cancel
+        }
+
+        let space = Embedder.enoughSpace(src: files, dest: out)
         let queue = files
+        let token = CancelToken()
+        cancelToken = token
+        cancelRequested = false
         running = true; progress = 0; statusLine = "Starting…"
+
         DispatchQueue.global(qos: .userInitiated).async {
             let total = queue.count
-            var done = 0, embedded = 0
+            var done = 0, embedded = 0, skipped = 0, failed = 0
             var log = RunLog.header(output: out, freeBytes: space.free, sameVolume: space.sameVolume)
             log.append("inputs (\(total)):")
             for f in queue {
@@ -257,27 +305,52 @@ struct ContentView: View {
                 log.append("  \(f.lastPathComponent)  \(RunLog.human(Int64(sz)))")
             }
             log.append("results:")
+            var cancelled = false
             for f in queue {
+                if token.isCancelled { cancelled = true; break }   // cancel between files
                 DispatchQueue.main.async { statusLine = "Embedding \(f.lastPathComponent)…  (\(done + 1)/\(total))" }
-                let res = Embedder.embed(src: f, intoFolder: folder)
+                var res = Embedder.embed(src: f, intoFolder: folder)
+                // post-embed verify: re-open the copy; a copy that fails is deleted + failed.
+                if case .embedded(let n, let dest) = res {
+                    let v = Embedder.verifyEmbedded(dest, expected: n)
+                    if !v.ok {
+                        try? FileManager.default.removeItem(at: dest)
+                        res = .failed("embedded but failed verify (\(v.detail))")
+                    }
+                }
                 done += 1
                 let frac = Double(done) / Double(total)
                 let line: String
                 switch res {
-                case .embedded(let n, _): embedded += 1; line = "✓ \(f.lastPathComponent) — \(n) mark(s)  (\(done)/\(total))"
-                case .skippedNoMarks:     line = "– \(f.lastPathComponent): no Shot Marks  (\(done)/\(total))"
-                case .notSony:            line = "– \(f.lastPathComponent): not Sony  (\(done)/\(total))"
-                case .failed(let e):      line = "✗ \(f.lastPathComponent): \(e)  (\(done)/\(total))"
+                case .embedded(let n, _): embedded += 1; line = "✓ \(f.lastPathComponent) — \(n) mark(s), verified  (\(done)/\(total))"
+                case .skippedNoMarks:     skipped += 1; line = "– \(f.lastPathComponent): no Shot Marks  (\(done)/\(total))"
+                case .notSony:            skipped += 1; line = "– \(f.lastPathComponent): not Sony  (\(done)/\(total))"
+                case .failed(let e):      failed += 1; line = "✗ \(f.lastPathComponent): \(e)  (\(done)/\(total))"
                 }
                 log.append("  " + line)
                 DispatchQueue.main.async { progress = frac; statusLine = line }
             }
-            log.append("summary: \(embedded)/\(total) embedded")
+            let tally = summaryTally(embedded: embedded, skipped: skipped, failed: failed)
+            let leftover = total - done
+            if cancelled {
+                log.append("summary: CANCELLED — \(embedded)/\(total) embedded, \(leftover) not started   [\(tally)]")
+            } else {
+                log.append("summary: \(embedded)/\(total) embedded   [\(tally)]")
+            }
             RunLog.write(lines: log)
             DispatchQueue.main.async {
-                progress = 1; running = false
-                statusLine = "Done — \(embedded)/\(total) embedded into “footage embedded markers”."
+                progress = 1; running = false; cancelRequested = false
+                statusLine = cancelled
+                    ? "Cancelled — \(embedded) embedded, \(leftover) not started."
+                    : "Done — \(tally) into “footage embedded markers”."
             }
         }
+    }
+
+    private func summaryTally(embedded: Int, skipped: Int, failed: Int) -> String {
+        var parts = ["✓\(embedded)"]
+        if skipped > 0 { parts.append("–\(skipped)") }
+        if failed > 0 { parts.append("✗\(failed)") }
+        return parts.joined(separator: " · ")
     }
 }

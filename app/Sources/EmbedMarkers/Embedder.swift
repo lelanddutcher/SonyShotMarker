@@ -276,4 +276,76 @@ enum Embedder {
         let ok = free < 0 || free >= required
         return (ok, required, free, same)
     }
+
+    // MARK: post-embed verify — re-open the written copy and confirm the Adobe XMP markers
+    // are present, parseable, and positioned BEFORE mdat (the only place Premiere reads
+    // them). This is the integrity gate that lets the app honor "verify before you delete
+    // the originals": a clip is only marked ✓ once its copy reads back correctly.
+    static func verifyEmbedded(_ url: URL, expected: Int) -> (ok: Bool, detail: String) {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+            return (false, "cannot reopen output")
+        }
+        let boxes = topBoxes(data)
+        guard let mdat = boxes.first(where: { $0.type == "mdat" })?.offset else {
+            return (false, "no mdat box in output (structure broken)")
+        }
+        var payload: Data? = nil
+        for b in boxes where b.type == "uuid" && b.offset < mdat && b.size >= 24 {
+            let u = data.startIndex + b.offset + 8
+            if Array(data[u..<u+16]) == adobeUUID {
+                let s = data.startIndex + b.offset + 24
+                let e = data.startIndex + b.offset + b.size
+                payload = data[s..<e]
+            }
+        }
+        guard let xmp = payload else { return (false, "no Adobe XMP marker box before mdat") }
+        let count = String(decoding: xmp, as: UTF8.self).components(separatedBy: "xmpDM:startTime").count - 1
+        if count == 0 { return (false, "XMP box present but holds no markers") }
+        if count != expected { return (false, "expected \(expected) marker(s), found \(count)") }
+        // structural sanity: top-level boxes must tile the whole file with no gap/overrun
+        let walked = boxes.reduce(0) { $0 + $1.size }
+        if walked != data.count { return (false, "box walk does not cover the whole file") }
+        return (true, "\(count) marker(s) verified")
+    }
+
+    // MARK: preflight gate — everything that must hold before we touch a byte.
+    static func preflightProblems(src: [URL], dest: URL) -> [String] {
+        var problems = [String]()
+        let fm = FileManager.default
+        for f in src {
+            if !fm.fileExists(atPath: f.path) { problems.append("missing source: \(f.lastPathComponent)") }
+            else if !fm.isReadableFile(atPath: f.path) { problems.append("unreadable source: \(f.lastPathComponent)") }
+        }
+        var probe = dest
+        while !fm.fileExists(atPath: probe.path) {
+            let parent = probe.deletingLastPathComponent()
+            if parent.path == probe.path { break }
+            probe = parent
+        }
+        if !fm.isWritableFile(atPath: probe.path) { problems.append("output is read-only: \(probe.lastPathComponent)") }
+        for f in src where f.deletingLastPathComponent().standardizedFileURL == dest.standardizedFileURL {
+            problems.append("output would overwrite the original: \(f.lastPathComponent)")
+        }
+        // measure free space against the nearest existing dir (the dest subfolder may not exist yet)
+        let space = enoughSpace(src: src, dest: probe)
+        if !space.ok { problems.append("not enough space: need ~\(RunLog.human(space.required)), \(RunLog.human(space.free)) free") }
+        return problems
+    }
+
+    /// Copies from a previous run that already exist at the destination and would be replaced.
+    static func existingOutputs(src: [URL], dest: URL) -> [URL] {
+        let fm = FileManager.default
+        return src.compactMap { f in
+            let d = dest.appendingPathComponent(f.lastPathComponent)
+            return fm.fileExists(atPath: d.path) ? d : nil
+        }
+    }
+}
+
+/// Thread-safe cancel flag shared between the UI (sets it) and the background worker (polls it).
+final class CancelToken {
+    private let lock = NSLock()
+    private var cancelled = false
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 }
