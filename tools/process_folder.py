@@ -43,20 +43,29 @@ def embed_inplace(clip, path):
 
 
 def write_resolve_kit(dest):
+    """Drop the Resolve panel next to the batch output, so a DIT handing off a drive can
+    include the thing that reads it. The panel lives in plugin/resolve/ now; sony_shotmark
+    rides along for anyone who wants the CLI."""
     os.makedirs(dest, exist_ok=True)
-    for f in ("Resolve_ApplyShotMarks.py", "sony_shotmark.py"):
-        shutil.copy2(os.path.join(HERE, f), os.path.join(dest, f))
+    sources = [
+        os.path.join(HERE, "..", "plugin", "resolve", "SonyShotMarker.py"),
+        os.path.join(HERE, "sony_shotmark.py"),
+    ]
+    for src in sources:
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
     open(os.path.join(dest, "INSTALL.txt"), "w").write(
         "DaVinci Resolve — apply Sony Shot Marks\n"
         "=======================================\n"
-        "1. Copy BOTH files in this folder into Resolve's Scripts/Utility folder:\n"
+        "1. Copy SonyShotMarker.py into Resolve's Scripts/Utility folder:\n"
         "     macOS: ~/Library/Application Support/Blackmagic Design/DaVinci Resolve/"
         "Fusion/Scripts/Utility/\n"
         "     Win:   %APPDATA%\\Blackmagic Design\\DaVinci Resolve\\Support\\Fusion\\"
         "Scripts\\Utility\\\n"
         "2. Import your footage into your Resolve project as usual.\n"
-        "3. Run  Workspace > Scripts > Resolve_ApplyShotMarks.\n"
-        "   Every clip that has Sony Shot Marks gets blue clip markers. Re-runnable.\n")
+        "3. Run  Workspace > Scripts > SonyShotMarker.\n"
+        "   A window opens: pick a colour, Scan to preview, Apply to mark. Re-runnable,\n"
+        "   and it never writes to your footage.\n")
 
 
 def main(argv=None):
@@ -119,7 +128,7 @@ def main(argv=None):
         "DAVINCI RESOLVE:\n"
         "  Resolve can't read marks from media. Use the kit in _ResolveShotMarks/ "
         "(see its INSTALL.txt):\n"
-        "  install the script once, then Workspace > Scripts > Resolve_ApplyShotMarks.\n")
+        "  install the panel once, then Workspace > Scripts > SonyShotMarker.\n")
     print(f"\n✓ Package ready in {args.folder}")
     print(f"   {n_marked} clip(s) marked · SHOTMARKS.csv/json · _ResolveShotMarks/ · README_SHOTMARKS.txt\n")
 

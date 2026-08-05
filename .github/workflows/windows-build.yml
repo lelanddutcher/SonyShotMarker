@@ -24,6 +24,33 @@ jobs:
       - name: Run core tests
         run: python -m pytest -q tests
 
+      # The Premiere panel is the same JavaScript on both platforms, so what actually
+      # needs proving on Windows is the path layer: drive letters, backslashes, UNC
+      # shares and spaces all have to survive the trip into UXP's file: URL scheme.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Premiere plugin test suites
+        run: |
+          node tests/js/test_shotmarks.js
+          node tests/js/test_clipmarks.js
+          node tests/js/test_panel.js
+
+      - name: Check the plugin package builds
+        shell: pwsh
+        run: |
+          python plugin/package_plugin.py --out dist/plugin
+          $ccx = Get-ChildItem dist/plugin -Filter *.ccx | Select-Object -First 1
+          if (!$ccx) { throw "no .ccx produced" }
+          Get-Item $ccx.FullName | Format-List FullName,Length
+
+      - name: Upload Premiere plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sony-Shot-Marks-Premiere-Plugin
+          path: dist/plugin/
+
       - name: Compile and smoke Windows launcher
         run: |
           python -m py_compile windows/shot_mark_embedder_windows.py tools/sony_shotmark.py tools/embed_batch.py

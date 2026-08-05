@@ -61,6 +61,28 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 echo "▸ uploading to GitHub release $TAG"
 gh release upload "$TAG" "$ZIP" --clobber
 
+# ── Premiere Pro panel: shipped alongside the app, and usable on its own ──
+# The plugin is plain JavaScript with no Adobe signing step, so it just gets packaged and
+# attached. Its version lives in plugin/premiere-uxp/manifest.json and is deliberately
+# independent of the app's tag - the panel and the app ship on their own schedules.
+echo "▸ packaging the Premiere Pro panel"
+if python3 plugin/package_plugin.py --out dist/plugin; then
+  PLUGIN_VERSION="$(python3 -c 'import json;print(json.load(open("plugin/premiere-uxp/manifest.json"))["version"])')"
+  PLUGIN_CCX="dist/plugin/Sony-Shot-Marker-${PLUGIN_VERSION}.ccx"
+  PLUGIN_ZIP="dist/plugin/Sony-Shot-Marker-${PLUGIN_VERSION}.zip"
+  echo "▸ uploading the panel to release $TAG"
+  gh release upload "$TAG" "$PLUGIN_CCX" "$PLUGIN_ZIP" --clobber
+  echo "  panel $PLUGIN_VERSION attached ($(basename "$PLUGIN_CCX"), $(basename "$PLUGIN_ZIP"))"
+else
+  echo "  ⚠ panel packaging failed — the app release above is still fine; fix and re-upload."
+fi
+
+# ── DaVinci Resolve panel: the single script, plus a zip with its installers ──
+echo "▸ uploading the Resolve panel"
+gh release upload "$TAG" plugin/resolve/SonyShotMarker.py --clobber
+RESOLVE_ZIP="dist/plugin/Sony-Shot-Marker-Resolve-${PLUGIN_VERSION:-1.0.0}.zip"
+[ -f "$RESOLVE_ZIP" ] && gh release upload "$TAG" "$RESOLVE_ZIP" --clobber
+
 # ── Sparkle auto-update feed: EdDSA-sign the zip + emit the appcast item ──
 SPARKLE_BIN="app/.build/artifacts/sparkle/Sparkle/bin"
 if [ -x "$SPARKLE_BIN/sign_update" ]; then
@@ -87,3 +109,5 @@ fi
 echo "✓ Done — notarized, stapled, and uploaded: $ZIP"
 echo "  Users can now download, unzip, and open it with no Gatekeeper warning."
 echo "  Auto-update goes live once the signed <item> above is committed to appcast.xml."
+echo "  The Premiere panel and the Resolve script are attached to the same release, so"
+echo "  someone who only wants the plugin never has to download the app."

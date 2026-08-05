@@ -1,0 +1,201 @@
+/*
+ * Panel styling.
+ *
+ * UXP renders a narrow subset of CSS and fails silently when it does not support
+ * something - the rule just does nothing and you are left staring at an unstyled native
+ * widget. Everything below is written around what this panel has actually established:
+ *
+ *   - there is no user-agent stylesheet: h1/p/section/div do not default to display:block
+ *   - a native <button> draws its own label and does NOT paint or lay out its children,
+ *     so all controls here are divs (see the note at the top of index.html)
+ *   - background-color renders on a <div>, but not on a <button> and not on a <span>
+ *   - the child combinator (parent > child) is not honoured
+ *   - text-transform is ignored: write text the way it should appear
+ *
+ * Editing rule: single-class selectors, controls are divs, no combinators.
+ */
+* { box-sizing: border-box; }
+
+h1, p, header, section, footer, div, label { display: block; }
+
+body {
+  margin: 0;
+  font-family: "Adobe Clean", -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: #d8d8d8;
+  background-color: #232323;
+}
+
+#root { display: flex; flex-direction: column; padding: 16px; }
+
+/* -- header ---------------------------------------------------------------- */
+header { margin-bottom: 16px; }
+
+.titlebar { display: flex; align-items: center; }
+
+.brand {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.titletext { flex-grow: 1; }
+
+h1 {
+  margin: 0 0 3px 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f4f4f4;
+}
+
+.tagline { margin: 0; font-size: 11px; color: #8f8f8f; line-height: 1.45; }
+
+/* -- banner ---------------------------------------------------------------- */
+.banner { display: none; }
+
+.banner.visible {
+  display: block;
+  margin-bottom: 14px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  background-color: #4a2620;
+  color: #f0b4a6;
+}
+
+/* -- rows ------------------------------------------------------------------ */
+.controls { margin-bottom: 14px; }
+
+.row { display: flex; align-items: center; margin-bottom: 10px; }
+.row-check { margin-bottom: 2px; }
+
+.label {
+  width: 62px;
+  font-size: 11px;
+  color: #8f8f8f;
+  flex-shrink: 0;
+}
+
+/* -- segmented control (divs, clicked directly) ---------------------------- */
+.segmented { display: flex; }
+
+.pill {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+}
+
+.pill-left { border-radius: 13px 0 0 13px; }
+.pill-right { border-radius: 0 13px 13px 0; }
+
+.pill-on { background-color: #f7578c; color: #ffffff; }
+.pill-off { background-color: #333333; color: #9a9a9a; }
+
+/* -- colour swatches ------------------------------------------------------- */
+.swatches { display: flex; flex-grow: 1; }
+
+/* Fixed box + explicit colour classes. Inline styles and sized empty buttons both
+   failed to render, so each dot is a div that owns its colour through a class. */
+.dot {
+  width: 20px;
+  height: 20px;
+  margin-right: 7px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.dot-on { border: 2px solid #ffffff; }
+.dot-off { border: 2px solid #232323; }
+
+.c0 { background-color: #4fb973; }
+.c1 { background-color: #e05c5c; }
+.c2 { background-color: #a06bd8; }
+.c3 { background-color: #e8964b; }
+.c4 { background-color: #e5c84b; }
+.c5 { background-color: #e8e8e8; }
+.c6 { background-color: #5b8fe0; }
+.c7 { background-color: #4fc4d6; }
+
+.swatch-name {
+  width: 50px;
+  font-size: 10px;
+  color: #b4b4b4;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+#includeAuto { margin: 0 8px 0 0; flex-shrink: 0; }
+.check-label { font-size: 11px; color: #a8a8a8; }
+
+/* -- action buttons (divs, clicked directly) -------------------------------- */
+.actions { display: flex; margin-bottom: 12px; }
+
+.fill {
+  padding: 10px 18px;
+  border-radius: 19px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.fill-primary { background-color: #f7578c; color: #ffffff; flex-grow: 1; }
+.fill-ghost { background-color: #3a3a3a; color: #d0d0d0; margin-right: 9px; }
+.fill-disabled { opacity: 0.4; }
+
+/* -- progress -------------------------------------------------------------- */
+.progress {
+  height: 3px;
+  background-color: #333333;
+  border-radius: 2px;
+  margin-bottom: 14px;
+  opacity: 0;
+}
+
+.progress.visible { opacity: 1; }
+.bar { height: 3px; width: 0%; background-color: #f7578c; border-radius: 2px; }
+
+/* -- results --------------------------------------------------------------- */
+.results { flex-grow: 1; }
+
+.empty { margin: 0 0 8px 0; font-size: 11px; color: #7a7a7a; line-height: 1.5; }
+
+.result { padding: 9px 0; border-top: 1px solid #333333; }
+
+.result-top { display: flex; align-items: baseline; justify-content: space-between; }
+
+.clip-name { font-size: 12px; font-weight: 500; color: #ececec; margin-right: 8px; }
+
+.status { font-size: 10px; color: #8a8a8a; flex-shrink: 0; }
+.status.good { color: #6fcf97; }
+.status.bad { color: #e8836f; }
+.status.muted { color: #7a7a7a; }
+
+.result-detail { margin-top: 3px; font-size: 11px; color: #8a8a8a; line-height: 1.4; }
+
+.chips { display: flex; flex-wrap: wrap; margin-top: 6px; }
+
+.chip {
+  margin: 3px 5px 0 0;
+  padding: 2px 7px;
+  border-radius: 8px;
+  background-color: #303030;
+  font-size: 10px;
+  color: #a4a4a4;
+}
+
+.chip.more { color: #f7578c; }
+
+/* -- footer ---------------------------------------------------------------- */
+footer {
+  margin-top: 14px;
+  padding-top: 11px;
+  border-top: 1px solid #333333;
+}
+
+.summary { font-size: 10px; color: #8a8a8a; line-height: 1.4; }

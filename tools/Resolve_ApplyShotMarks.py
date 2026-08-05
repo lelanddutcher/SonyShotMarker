@@ -1,30 +1,34 @@
 #!/usr/bin/env python3
 """
-Resolve_ApplyShotMarks  —  self-contained DaVinci Resolve drop-in script.
+Resolve_ApplyShotMarks - LEGACY console script for DaVinci Resolve.
 
-Reads Sony "Shot Marks" straight out of each media file's embedded metadata and adds
-them as native Resolve clip markers. Recurses the whole Media Pool. Idempotent.
+SUPERSEDED BY plugin/resolve/SonyShotMarker.py, which does the same job with a window,
+a colour picker and a Scan-before-you-commit step. This file is kept because it is what
+earlier releases shipped, people have it installed and wired into their own workflows,
+and it still works. It is not going away.
 
-DEPENDENCIES: NONE beyond the Python standard library. No ffmpeg, no exiftool, no pip
-packages. The Sony marks are plain XML inside the file; we just read and parse bytes.
-Runs in Resolve's built-in Python. This is ONE file — nothing else to install.
+The difference: this one runs headless the moment you pick it from the Scripts menu and
+marks everything, printing to Workspace > Console. No window, no options. If that is what
+you want in a batch or an automated setup, it is arguably the better tool.
 
-INSTALL (once):
-  Copy this file into Resolve's Scripts/Utility folder:
-    macOS : ~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/
-    Win   : %APPDATA%\\Blackmagic Design\\DaVinci Resolve\\Support\\Fusion\\Scripts\\Utility\\
-USE:
-  1. Import your Sony footage into the project as usual.
-  2. Workspace ▸ Scripts ▸ Resolve_ApplyShotMarks   (output shows in Workspace ▸ Console)
+DEPENDENCIES: none beyond the Python standard library.
 
-TEST THE READER WITHOUT RESOLVE (from a terminal):
-  python3 Resolve_ApplyShotMarks.py /path/to/CLIP.MP4     # prints the marks it would add
+INSTALL: copy into Resolve's Scripts/Utility folder:
+  macOS : ~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/
+  Win   : %APPDATA%\\Blackmagic Design\\DaVinci Resolve\\Support\\Fusion\\Scripts\\Utility\\
+
+USE: import your footage, then Workspace > Scripts > Resolve_ApplyShotMarks.
+
+TEST THE READER WITHOUT RESOLVE:
+  python3 Resolve_ApplyShotMarks.py /path/to/CLIP.MP4
 """
 import os, sys, re, struct
 
-# ── Sony Shot Mark extraction (pure standard library) ───────────────────────────
+# ShotMark1 -> Blue, ShotMark2 -> Cyan. The panel lets you choose; this one does not, and
+# these are the colours earlier releases used, so existing projects stay consistent.
+COLOR = {"_ShotMark1": "Blue", "_ShotMark2": "Cyan"}
+
 ESSENCE_MARK_KEY = "060E2B34010101050301020A02000000"   # SMPTE comment/essence-mark UL
-COLOR = {"_ShotMark1": "Blue", "_ShotMark2": "Cyan"}     # Resolve marker colors
 FPS_EXACT = {"23.98": (24000, 1001), "23.976": (24000, 1001), "24": (24, 1), "25": (25, 1),
              "29.97": (30000, 1001), "30": (30, 1), "47.95": (48000, 1001), "48": (48, 1),
              "50": (50, 1), "59.94": (60000, 1001), "60": (60, 1), "100": (100, 1),
@@ -73,17 +77,124 @@ def _frames_to_tc(frames, nominal, drop):
                                      frames // nominal % 60, sep, frames % nominal)
 
 
+WINDOW = 1 << 20          # bytes per scan window
+MAX_DOC = 8 << 20         # a NonRealTimeMeta doc is ~2.5 KB; this is a sanity cap
+PROBE = 32 << 20          # head/tail bytes scanned in a container we cannot walk
+
+
+def _walk_top_boxes(fh, total):
+    """Yield (kind, offset, size) for top-level MP4/MOV boxes, reading only the 8/16-byte
+    headers so a multi-gigabyte `mdat` is seeked past rather than read."""
+    pos = 0
+    while pos + 8 <= total:
+        fh.seek(pos)
+        hdr = fh.read(8)
+        if len(hdr) < 8:
+            return
+        size = int.from_bytes(hdr[0:4], "big")
+        kind = hdr[4:8]
+        if size == 1:                      # 64-bit size follows the type
+            ext = fh.read(8)
+            if len(ext) < 8:
+                return
+            size = int.from_bytes(ext, "big")
+        elif size == 0:                    # "to end of file"
+            size = total - pos
+        if size < 8 or pos + size > total:
+            return                         # malformed or truncated: stop cleanly
+        yield kind, pos, size
+        pos += size
+
+
+DOC_CHUNK = 64 << 10      # the doc is ~2.5 KB; read it in small bites, not 1 MiB gulps
+
+
+def _scan_for_nrt(fh, start, end, doc_end=None):
+    """Return the NonRealTimeMeta document inside [start, end), scanning in bounded
+    overlapping windows so nothing large is ever held in memory.
+
+    `doc_end` bounds the follow-on read once the opening tag is found. For a box scan that
+    is the end of the box; for a head/tail probe it is the end of the file, since the
+    document may continue past the probe boundary.
+    """
+    if doc_end is None:
+        doc_end = end
+    pos = start
+    while pos < end:
+        fh.seek(pos)
+        buf = fh.read(min(WINDOW, end - pos))
+        if not buf:
+            return None
+        i = buf.find(b"<NonRealTimeMeta")
+        if i != -1:
+            at = pos + i
+            fh.seek(at)
+            doc = b""
+            while len(doc) < MAX_DOC and at + len(doc) < doc_end:
+                chunk = fh.read(min(DOC_CHUNK, doc_end - at - len(doc)))
+                if not chunk:
+                    break
+                doc += chunk
+                j = doc.find(b"</NonRealTimeMeta>")
+                if j != -1:
+                    return doc[:j + 18].decode("utf-8", "replace")
+            return None
+        if len(buf) < WINDOW:
+            return None
+        pos += WINDOW - 64                 # overlap, so a split tag is still found
+    return None
+
+
+def _find_nrt_xml(path):
+    """Locate the Sony metadata WITHOUT loading the media.
+
+    On an A7S III clip the metadata sits in a top-level `meta` box after the media payload
+    -- byte 335,813,843 of a 335 MB file -- so reading the whole file to find 2.5 KB of XML
+    is not an option once you are pointed at a real card offload. MP4/MOV are walked box by
+    box with `mdat` skipped; anything else gets a bounded head+tail probe. Finally we fall
+    back to the Cxxxx M01.XML sidecar, which is what survives a partial offload.
+    """
+    try:
+        total = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            boxes = list(_walk_top_boxes(fh, total))
+            if boxes and boxes[0][0] in (b"ftyp", b"moov", b"mdat", b"wide", b"skip"):
+                for kind, off, size in boxes:
+                    if kind == b"mdat":
+                        continue
+                    doc = _scan_for_nrt(fh, off, off + size)
+                    if doc:
+                        return doc
+            else:
+                doc = _scan_for_nrt(fh, 0, min(total, PROBE), doc_end=total)
+                if doc:
+                    return doc
+                if total > PROBE:
+                    doc = _scan_for_nrt(fh, total - PROBE, total, doc_end=total)
+                    if doc:
+                        return doc
+    except OSError:
+        pass
+
+    base = os.path.splitext(path)[0]
+    for suffix in ("M01.XML", "M01.xml", "M01.Xml"):
+        side = base + suffix
+        if os.path.isfile(side):
+            try:
+                with open(side, "rb") as fh:
+                    doc = _scan_for_nrt(fh, 0, os.path.getsize(side))
+                if doc:
+                    return doc
+            except OSError:
+                pass
+    return None
+
+
 def read_shot_marks(path):
     """Return a list of {label,name,frame,elapsed,tc} user Shot Marks, or [] if none."""
-    try:
-        raw = open(path, "rb").read()
-    except OSError:
+    xml = _find_nrt_xml(path)
+    if not xml:
         return []
-    i = raw.find(b"<NonRealTimeMeta")
-    j = raw.find(b"</NonRealTimeMeta>")
-    if i == -1 or j == -1:
-        return []
-    xml = raw[i:j + 18].decode("utf-8", "replace")
 
     def attr(tag, a):
         m = re.search(r'<%s[^>]*\b%s="([^"]*)"' % (tag, a), xml)

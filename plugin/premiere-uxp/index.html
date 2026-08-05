@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<!--
+  Sony Shot Marker - Premiere Pro panel.
+
+  Every control here is a plain <div> with a click listener, and that is deliberate.
+
+  A UXP <button> is a native widget: it draws its own label from its text content and
+  does NOT lay out or paint child elements. Put a styled <div> or <span> inside one and
+  the fill never appears; give it no text at all and it collapses to zero size. That
+  cost three rounds of "the toggle does not respond" - the class was flipping correctly
+  the whole time, nothing was drawing it.
+
+  Plain divs receive clicks in UXP and honour background-color, so they are both
+  styleable and clickable. The only native control kept is the checkbox, which works.
+
+  Other UXP facts this file depends on:
+    * scripts go in <head> - a script at the end of <body> may never execute;
+    * there is no user-agent stylesheet, so display is set explicitly in styles.css;
+    * text-transform is ignored, so headings are written in the case they should show.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sony Shot Marker</title>
+    <script src="src/lib/paths.js"></script>
+    <script src="src/lib/shotmarks.js"></script>
+    <script src="src/lib/reader-uxp.js"></script>
+    <script src="src/lib/clipmarks.js"></script>
+    <script src="src/premiere.js"></script>
+    <script src="src/main.js"></script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root">
+      <header>
+        <div class="titlebar">
+          <img class="brand" src="icons/cat.png" alt="" />
+          <div class="titletext">
+            <h1>SONY SHOT MARKER</h1>
+            <p class="tagline">Read straight out of your footage. Never written to it.</p>
+          </div>
+        </div>
+      </header>
+
+      <div id="banner" class="banner"></div>
+
+      <section class="controls">
+        <div class="row">
+          <div class="label">Apply to</div>
+          <div class="segmented">
+            <div id="scopeSelection" class="pill pill-left pill-on">Selected clips</div>
+            <div id="scopeProject" class="pill pill-right pill-off">Whole project</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="label">Colour</div>
+          <div class="swatches" id="colors"></div>
+          <div class="swatch-name" id="colorName">Green</div>
+        </div>
+
+        <div class="row row-check">
+          <input type="checkbox" id="includeAuto" />
+          <label for="includeAuto" class="check-label">Also mark automatic Rec Start / Rec End</label>
+        </div>
+      </section>
+
+      <section class="actions">
+        <div id="scanBtn" class="fill fill-ghost">Scan</div>
+        <div id="applyBtn" class="fill fill-primary">Apply Shot Marks</div>
+      </section>
+
+      <div class="progress" id="progress"><div class="bar" id="progressBar"></div></div>
+
+      <section class="results" id="results">
+        <p class="empty">Select some Sony clips in the Project panel and hit Scan.</p>
+      </section>
+
+      <footer>
+        <div class="summary" id="summary">Read-only. Your camera originals are never modified.</div>
+      </footer>
+    </div>
+  </body>
+</html>

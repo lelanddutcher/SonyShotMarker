@@ -55,3 +55,20 @@ handoff/
 .env.*
 *.env
 sparkle_private_key*
+
+# ── Adobe plugin packaging + UDT workspace (mirrors of plugin/premiere-uxp) ──
+*.ccx
+UXP Plugin/
+
+# ── Premiere / Resolve project + design scratch that lives beside the repo ──
+*.prproj
+*.prlock
+Adobe Premiere Pro Auto-Save/
+*.af
+*.af~lock~
+*.drp
+
+# ── Loose screenshots dropped in the repo root; the published ones live in docs/img ──
+/*.png
+/*.jpg
+!docs/img/*
