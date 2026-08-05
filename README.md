@@ -6,28 +6,57 @@ one of the best features on the A7S III and the FX bodies and almost nobody uses
 the second you import that footage into Premiere or Resolve, the marks are gone. The NLEs
 don't speak Sony's metadata, so the work you did on set evaporates.
 
-This fixes that. Two ways, depending on what you care about.
+This fixes that. Three tools, same marks, same frames — pick the one that matches how you
+work.
 
-<img src="docs/img/app-ui.png" width="520" alt="Shot Mark Embedder - drop your Sony clips, get markers" />
+<table>
+<tr>
+<td width="33%" align="center"><img src="docs/img/premiere-panel.png" alt="The Sony Shot Marker panel in Premiere Pro" /></td>
+<td width="33%" align="center"><img src="docs/img/resolve-panel.png" alt="The Sony Shot Marker panel in DaVinci Resolve" /></td>
+<td width="33%" align="center"><img src="docs/img/app-ui.png" alt="Shot Mark Embedder - drop your Sony clips, get markers" /></td>
+</tr>
+<tr>
+<td align="center"><b>Premiere panel</b><br><sub>reads in place</sub></td>
+<td align="center"><b>Resolve panel</b><br><sub>reads in place</sub></td>
+<td align="center"><b>Shot Mark Embedder</b><br><sub>writes the marks into the file</sub></td>
+</tr>
+</table>
 
 ## Pick one
 
-**The Premiere panel** reads the marks straight out of your footage and adds them as clip
-markers. Nothing is copied, nothing is written, your originals are untouched on disk. Select
-your clips, hit a button, done. This is what you want if you don't want a second copy of
-everything on your drives. → [`plugin/`](plugin/)
+**The two panels** read the marks straight out of your footage and add them as clip markers
+in the NLE you're already in. Nothing is copied, nothing is written, your originals sit on
+disk byte-for-byte identical. Select your clips, hit a button, done. This is what you want
+day to day, and it's what you want if you don't fancy a second copy of everything on your
+drives. → [`plugin/premiere-uxp/`](plugin/premiere-uxp/) · [`plugin/resolve/`](plugin/resolve/)
 
-**The app** bakes the marks into a *copy* of each clip as standard Adobe XMP. Slower, uses
-disk, but the marks then travel with the file — hand it to another editor on another machine
-with no plugin installed and the markers are just there. → [Releases](https://github.com/lelanddutcher/SonyShotMarker/releases)
+*(Resolve needs its own panel rather than reading an embedded file, because Resolve refuses
+to read markers out of media no matter how they're embedded. That's a Resolve limitation,
+not mine — even Sony's own plugin can't import Shot Marks there.)*
 
-**The Resolve panel** does the same thing inside DaVinci Resolve. Resolve refuses to read
-markers out of a media file no matter how they're embedded — that's a Resolve limitation,
-not mine, and even Sony's own plugin can't import Shot Marks there — so this reads the
-camera metadata itself and applies the marks through Resolve's API. → [`plugin/resolve/`](plugin/resolve/)
+**The app writes the marks into the footage itself**, as standard Adobe XMP, in a copy of
+each clip. That's slower and it costs disk. What you get for it is that the marks stop
+depending on software being installed anywhere.
 
-All three read the same marks the same way and put them in the same place. Use whichever
-fits your workflow.
+That matters more than it sounds:
+
+- **Nobody needs the plugin.** Not the assistant, not the colourist, not the editor you're
+  handing off to on a Friday. They open the file, the markers are there.
+- **It survives version changes.** Plugin APIs get deprecated — Adobe has done it twice in
+  a decade, and Sony's own Catalyst plugin is a fossil because of it. A marker written into
+  the file is still a marker in ten years.
+- **It travels.** Ship a drive, sync a bucket, hand over a project. The marks are *in the
+  media*, not in a project database, not in a sidecar someone forgets to copy, not in a
+  plugin's preferences.
+- **It works where you can't install things.** Locked-down post house, someone else's
+  machine, a render node.
+
+If several people are cutting the same footage, or the footage is going to outlive the
+current version of your NLE, run the embed once and stop thinking about it.
+→ [Releases](https://github.com/lelanddutcher/SonyShotMarker/releases)
+
+Use a panel for your own edit, use the app when the footage leaves your hands. They're not
+mutually exclusive — all three read the same metadata and land markers on the same frames.
 
 **Never done this before?** [**docs/GETTING_STARTED.md**](docs/GETTING_STARTED.md) walks
 through the whole thing in plain English — setting up the camera button, installing, and
@@ -65,9 +94,6 @@ hit **Apply Shot Marks**. Markers appear at the frames you marked, named and col
 with source timecode in the comment.
 
 <div align="center">
-<img src="docs/img/premiere-panel.png" width="560" alt="The Sony Shot Marker panel in Premiere Pro" />
-<br><em>The panel. Pick a scope, pick a colour, Scan to look, Apply to commit.</em>
-<br><br>
 <img src="docs/img/premiere-markers.png" width="620" alt="Sony Shot Marks shown as clip markers on the timeline ruler in Premiere Pro" />
 <br><em>Four C1 presses, read straight from the file.</em>
 </div>
@@ -111,9 +137,6 @@ for marking a single clip from the command line. The installer won't touch them 
 got them. See [`plugin/resolve/`](plugin/resolve/) for when you'd want which.
 
 <div align="center">
-<img src="docs/img/resolve-panel.png" width="520" alt="The Sony Shot Marker panel in DaVinci Resolve" />
-<br><em>Same idea, native Resolve window.</em>
-<br><br>
 <img src="docs/img/resolve-markers.png" width="660" alt="Sony Shot Marks applied as DaVinci Resolve clip markers, with the script console output" />
 <br><em>The same four marks, on the source clip and on the timeline instance.</em>
 </div>

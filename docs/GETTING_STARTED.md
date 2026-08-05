@@ -56,15 +56,27 @@ them.
 
 | If you… | Use |
 |---|---|
-| Edit in **Premiere** and don't want extra copies of your footage | the **Premiere panel** |
-| Edit in **DaVinci Resolve** | the **Resolve panel** |
-| Want the marks baked into the file so they work anywhere, on any machine, with nothing installed | the **Shot Mark Embedder app** |
+| Edit in **Premiere**, on your own machine | the **Premiere panel** |
+| Edit in **DaVinci Resolve**, on your own machine | the **Resolve panel** |
+| Are handing the footage to **other people**, or want it to still work years from now | the **Shot Mark Embedder app** |
 
-The two panels read your footage and leave it completely untouched. The app makes a *copy*
-of each clip with the marks written inside — slower and uses disk space, but then the marks
-travel with the file. Hand that copy to another editor and the markers are just there.
+**The panels** read your footage and leave it completely untouched. They're what you'll use
+day to day.
 
-Most people want a panel. Grab everything from the
+**The app** is the durable option. It makes a *copy* of each clip with the marks written
+inside the file — slower, and it costs disk space. In exchange, the marks stop depending on
+anyone having software installed. Nobody downstream needs the plugin: the assistant, the
+colourist, the editor you hand off to on a Friday all just open the file and the markers are
+there. It keeps working when the NLE updates and plugin APIs change, and on machines where
+you can't install anything.
+
+If several people are cutting the same footage, or it's going into an archive, run the embed
+once and stop thinking about it.
+
+You don't have to choose forever — all three read the same marks and put them on the same
+frames. A panel for your own edit, the app for when the footage leaves your hands.
+
+Grab everything from the
 [**Releases page**](https://github.com/lelanddutcher/SonyShotMarker/releases).
 
 ---
@@ -191,6 +203,12 @@ The two panels never write to your media at all — files are opened read-only a
 byte-for-byte identical. The **app** is different: it writes *copies* and leaves your
 originals alone, but it does write files, so check the copies play before you delete
 anything. There's a fuller warning in the [main README](../README.md).
+
+**We're a team all cutting the same footage. What should we do?**
+Run the app once, on the offload, before the footage goes out. Everyone downstream gets the
+marks with no install, no version matching, and nothing to explain — it's just how those
+files are. The panels are great for your own edit but they only mark things inside *your*
+project, so a second editor opening the same media sees nothing.
 
 **Do I need to run this before I start editing?**
 No. Run it whenever. In Resolve, if you've already cut clips into a timeline, leave the
