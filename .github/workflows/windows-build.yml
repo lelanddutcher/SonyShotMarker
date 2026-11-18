@@ -29,7 +29,7 @@ jobs:
       # shares and spaces all have to survive the trip into UXP's file: URL scheme.
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "^22.23.4"
 
       - name: Run Premiere plugin test suites
         run: |
